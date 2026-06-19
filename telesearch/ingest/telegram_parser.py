@@ -96,4 +96,6 @@ def parse_export(export_path: str | Path) -> Iterator[Message]:
             reply_to=msg.get("reply_to_message_id"),
             media_type=media_type,
             media_path=media_path,
+            mime_type=msg.get("mime_type"),
+            file_name=msg.get("file_name"),
         )

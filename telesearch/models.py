@@ -19,6 +19,8 @@ class Message:
     reply_to: Optional[int] = None
     media_type: Optional[str] = None  # "photo" | "video" | "voice" | "file" | None
     media_path: Optional[str] = None  # path relative to the export root
+    mime_type: Optional[str] = None
+    file_name: Optional[str] = None
 
 
 @dataclass

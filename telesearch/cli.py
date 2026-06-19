@@ -29,6 +29,7 @@ def index(
     videos: bool = typer.Option(True, help="Summarize and transcribe videos."),
     audio: bool = typer.Option(True, help="Transcribe voice messages."),
     ocr: bool = typer.Option(True, help="Extract verbatim on-image text (OCR) as a separate chunk."),
+    documents: bool = typer.Option(True, help="Extract & index text from file attachments (PDF, Office, text/code)."),
 ):
     """Parse an export and build the searchable index."""
     from .ingest import parse_export
@@ -49,6 +50,7 @@ def index(
         do_videos=videos,
         do_audio=audio,
         do_ocr=ocr,
+        do_documents=documents,
     )
     console.print(
         f"[bold green]Done.[/bold green] Indexed {count} chunks into {settings.db_path}"
@@ -60,7 +62,7 @@ def search(
     query: str = typer.Argument(..., help="Search query."),
     k: int = typer.Option(10, help="Number of results."),
     modality: Optional[str] = typer.Option(
-        None, help="Filter by type: text, image, video, audio, ocr."
+        None, help="Filter by type: text, image, video, audio, ocr, document."
     ),
     rerank: Optional[bool] = typer.Option(
         None, "--rerank/--no-rerank", help="Cross-encoder rerank (default: config)."
@@ -125,6 +127,7 @@ def info():
     table.add_row("reranker_model", settings.reranker_model)
     table.add_row("use_reranker", str(settings.use_reranker))
     table.add_row("enable_ocr", str(settings.enable_ocr))
+    table.add_row("enable_documents", str(settings.enable_documents))
     table.add_row("vlm_model (captioning)", settings.vlm_model)
     table.add_row("chat_model (ask/RAG)", settings.chat_model)
     table.add_row("whisper_model", settings.whisper_model)

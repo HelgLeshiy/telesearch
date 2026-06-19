@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # OCR: extract verbatim on-image text as its own searchable field.
     enable_ocr: bool = True
 
+    # Document attachments (PDF, Office, text/code/CSV, ...).
+    enable_documents: bool = True
+    doc_chunk_chars: int = 1200
+    doc_chunk_overlap: int = 150
+    doc_max_chars: int = 400_000
+
     # OpenAI-compatible endpoint for the VLM / chat model (vLLM, SGLang, ...).
     llm_base_url: str = "http://localhost:8000/v1"
     llm_api_key: str = "EMPTY"

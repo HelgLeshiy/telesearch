@@ -28,13 +28,23 @@ def _message_to_chunks(
     transcriber,
     num_frames: int,
     do_ocr: bool = False,
+    do_documents: bool = False,
+    doc_chunk_chars: int = 1200,
+    doc_chunk_overlap: int = 150,
+    doc_max_chars: int = 400_000,
 ) -> list[Chunk]:
     """Turn one message into one or more searchable chunks."""
     chunks: list[Chunk] = []
 
-    def base(modality: str, content: str, media_path: Optional[str], extra=None) -> Chunk:
+    def base(
+        modality: str,
+        content: str,
+        media_path: Optional[str],
+        extra=None,
+        suffix: str = "",
+    ) -> Chunk:
         return Chunk(
-            chunk_id=f"{msg.id}:{modality}",
+            chunk_id=f"{msg.id}:{modality}{suffix}",
             message_id=msg.id,
             chat=msg.chat,
             sender=msg.sender,
@@ -99,6 +109,37 @@ def _message_to_chunks(
         if parts:
             chunks.append(base("video", "\n".join(parts), msg.media_path, extra))
 
+    if msg.media_type == "file" and resolved and do_documents:
+        from ..media.documents import extract_document_text, split_text
+
+        try:
+            text = extract_document_text(
+                resolved, msg.mime_type, msg.file_name, max_chars=doc_max_chars
+            )
+        except Exception as exc:  # pragma: no cover - robustness for big exports
+            tqdm.write(f"[warn] document extract failed for msg {msg.id}: {exc}")
+            text = ""
+        if text:
+            label = msg.file_name or Path(msg.media_path).name
+            pieces = split_text(text, doc_chunk_chars, doc_chunk_overlap)
+            for i, piece in enumerate(pieces):
+                # Prefix the file name so retrieval/answers know the source.
+                content = f"{label}\n{piece}" if i == 0 else piece
+                chunks.append(
+                    base(
+                        "document",
+                        content,
+                        msg.media_path,
+                        {
+                            "file_name": label,
+                            "mime_type": msg.mime_type,
+                            "part": i,
+                            "n_parts": len(pieces),
+                        },
+                        suffix=f":{i}",
+                    )
+                )
+
     if msg.media_type == "voice" and resolved and transcriber is not None:
         try:
             transcript = transcriber.transcribe(resolved)
@@ -121,6 +162,7 @@ def build_index(
     do_videos: bool = True,
     do_audio: bool = True,
     do_ocr: bool = True,
+    do_documents: bool = True,
     embed_batch: int = 256,
 ) -> int:
     """Build the LanceDB index from parsed messages. Returns chunk count."""
@@ -161,6 +203,10 @@ def build_index(
                 transcriber=transcriber if (do_audio or do_videos) else None,
                 num_frames=settings.video_frames,
                 do_ocr=do_ocr and do_images,
+                do_documents=do_documents,
+                doc_chunk_chars=settings.doc_chunk_chars,
+                doc_chunk_overlap=settings.doc_chunk_overlap,
+                doc_max_chars=settings.doc_max_chars,
             )
         )
         if len(buffer) >= embed_batch:

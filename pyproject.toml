@@ -27,10 +27,21 @@ asr = ["faster-whisper>=1.0.0"]
 video = ["av>=12.0.0"]
 # Optional Streamlit web UI.
 ui = ["streamlit>=1.36.0"]
+# Text extraction from PDF / Office documents.
+documents = [
+    "pypdf>=4.2.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.23",
+]
 all = [
     "faster-whisper>=1.0.0",
     "av>=12.0.0",
     "streamlit>=1.36.0",
+    "pypdf>=4.2.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.23",
 ]
 
 [project.scripts]

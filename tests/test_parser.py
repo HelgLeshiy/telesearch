@@ -50,6 +50,16 @@ def _write_export(tmp_path):
                 "file": "video_files/c.mp4",
                 "text": "trip",
             },
+            {
+                "id": 6,
+                "type": "message",
+                "date": "2024-01-01T10:04:00",
+                "date_unixtime": "1704103440",
+                "from": "Bob",
+                "file": "files/report.pdf",
+                "file_name": "report.pdf",
+                "mime_type": "application/pdf",
+            },
         ],
     }
     (tmp_path / "result.json").write_text(json.dumps(data), encoding="utf-8")
@@ -60,7 +70,7 @@ def test_parse_export_basic(tmp_path):
     messages = list(parse_export(tmp_path))
 
     # service message skipped
-    assert [m.id for m in messages] == [2, 3, 4, 5]
+    assert [m.id for m in messages] == [2, 3, 4, 5, 6]
 
     by_id = {m.id: m for m in messages}
     assert by_id[2].text == "hello world"
@@ -72,3 +82,8 @@ def test_parse_export_basic(tmp_path):
     assert by_id[4].media_type == "voice"
     assert by_id[5].media_type == "video"
     assert by_id[2].timestamp == 1704103200
+    # generic document attachment
+    assert by_id[6].media_type == "file"
+    assert by_id[6].media_path == "files/report.pdf"
+    assert by_id[6].file_name == "report.pdf"
+    assert by_id[6].mime_type == "application/pdf"

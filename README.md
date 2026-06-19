@@ -6,7 +6,9 @@ own GPU (built and tuned with an **NVIDIA RTX PRO 6000 / 96 GB** in mind).
 
 You point it at a Telegram chat export. It reads the text, *describes the
 photos*, *summarizes and transcribes the videos*, *transcribes voice messages*,
-and puts everything into one searchable index. Then you can:
+*reads text out of images (OCR)*, and *extracts the contents of attached
+documents* (PDF, Word, Excel, PowerPoint, text/code/CSV) — then puts everything
+into one searchable index. Then you can:
 
 - **Search** semantically + by keyword: `telesearch search "the receipt from the sushi place"`
 - **Ask** questions in natural language (RAG): `telesearch ask "what hotel did we book in Rome?"`
@@ -35,6 +37,8 @@ Telegram export (result.json + media/)
    │   • videos  → sampled frames → VLM summary     │
    │               + audio → Whisper transcript     │
    │   • voice   → Whisper transcript               │
+   │   • files   → document text extraction          │
+   │               (PDF, Office, text/code/CSV)      │
    └──────┬─────────────────────────────────────────┘
           ▼
    ┌──────────────┐
@@ -61,6 +65,7 @@ embeddings + keyword matching + a reranker. Generative models are only used to
 | **Rerank** | `bge-reranker-v2-m3` | cross-encoder | every query (top ~50 → top-k) |
 | **Image / video captioning + OCR** | `Qwen2.5-VL` | vision-language (generative) | once, at index time |
 | **Voice / video transcription** | Whisper `large-v3` | speech-to-text | once, at index time |
+| **Document extraction** | pypdf / python-docx / openpyxl / python-pptx | parsers (no model) | once, at index time |
 | **`ask` answer synthesis** | `Qwen2.5-VL` / `Qwen2.5-72B` | chat (generative) | only for `telesearch ask` |
 
 Why this design:
@@ -76,6 +81,10 @@ Why this design:
 - **OCR as a first-class field.** On-image text (screenshots, receipts,
   documents, memes) is transcribed verbatim and indexed as its own chunk, so a
   query can match what's *written in* a picture independently of its caption.
+- **Document attachments are searched by content.** PDFs, Word/Excel/PowerPoint
+  files and any text-based file (code, CSV, JSON, logs, subtitles, ...) are
+  extracted to text and split into overlapping chunks, so you can find a phrase
+  *inside* a file someone shared. Genuinely binary files are skipped.
 - **Embedded vector DB (LanceDB)** = no separate database server to run; the
   index is just files on disk, which scales fine to very large chats.
 - **Open-weight, OpenAI-compatible serving.** The VLM/chat model is reached
@@ -139,13 +148,17 @@ cp .env.example .env
 # Build the index (captions images, summarizes+transcribes videos, transcribes voice)
 telesearch index /path/to/telegram_export
 
-# Skip heavy media steps for a quick text-only index
+# Skip heavy media steps for a quick text-only index (documents need no GPU)
 telesearch index /path/to/telegram_export --no-videos --no-audio --no-ocr
+
+# Index ONLY typed text + documents (no GPU / VLM server needed at all)
+telesearch index /path/to/telegram_export --no-images --no-videos --no-audio --no-ocr
 
 # Hybrid search (with cross-encoder rerank by default)
 telesearch search "sunset photo from the beach trip"
 telesearch search "invoice" --modality image      # only photo captions
 telesearch search "total amount" --modality ocr    # only text read FROM images
+telesearch search "quarterly budget" --modality document  # only file contents
 telesearch search "address" --modality audio       # only voice transcripts
 telesearch search "quick keyword lookup" --no-rerank   # skip reranking for speed
 
@@ -174,6 +187,7 @@ telesearch/
   media/captioner.py     # VLM image / video-frame captioning + OCR
   media/video.py         # frame extraction (PyAV/ffmpeg)
   media/asr.py           # Whisper transcription
+  media/documents.py     # PDF/Office/text extraction + chunk splitter
   index/embeddings.py    # sentence-transformers text embeddings (bge-m3)
   index/store.py         # LanceDB vectors + BM25 + RRF hybrid search
   index/build.py         # end-to-end indexing pipeline
