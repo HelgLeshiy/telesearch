@@ -45,8 +45,23 @@ Telegram export (result.json + media/)
    │  LanceDB     │  vectors + BM25 full-text, on disk
    └──────┬───────┘
           ▼
-   search (RRF hybrid)  ──►  ask (RAG with local chat model)
+   hybrid (RRF) ─► rerank (bge-reranker-v2-m3) ─► search results
+                                               └─► ask (RAG, local chat model)
 ```
+
+### Which model does what?
+
+There is **no generative LLM doing the search itself**. Retrieval is handled by
+embeddings + keyword matching + a reranker. Generative models are only used to
+*understand media at index time* and to *write answers* in `ask`:
+
+| Stage | Model | Type | When |
+|---|---|---|---|
+| **Search / retrieval** | `bge-m3` + BM25 | embedding + lexical | every query (fast) |
+| **Rerank** | `bge-reranker-v2-m3` | cross-encoder | every query (top ~50 → top-k) |
+| **Image / video captioning + OCR** | `Qwen2.5-VL` | vision-language (generative) | once, at index time |
+| **Voice / video transcription** | Whisper `large-v3` | speech-to-text | once, at index time |
+| **`ask` answer synthesis** | `Qwen2.5-VL` / `Qwen2.5-72B` | chat (generative) | only for `telesearch ask` |
 
 Why this design:
 
@@ -56,7 +71,11 @@ Why this design:
   beach photo" finds the *image*, not just messages mentioning a beach.
 - **Hybrid retrieval** (semantic embeddings + BM25 keyword) via Reciprocal Rank
   Fusion catches both fuzzy/conceptual queries *and* exact strings (names,
-  numbers, links).
+  numbers, links), then a **cross-encoder reranker** re-scores the top
+  candidates by reading query+document together for much sharper precision.
+- **OCR as a first-class field.** On-image text (screenshots, receipts,
+  documents, memes) is transcribed verbatim and indexed as its own chunk, so a
+  query can match what's *written in* a picture independently of its caption.
 - **Embedded vector DB (LanceDB)** = no separate database server to run; the
   index is just files on disk, which scales fine to very large chats.
 - **Open-weight, OpenAI-compatible serving.** The VLM/chat model is reached
@@ -74,7 +93,8 @@ embedding/ASR models together, or a 70B-class chat model quantized.
 |---|---|---|
 | **Vision-language (image/video captioning)** | `Qwen/Qwen2.5-VL-32B-Instruct` | Excellent captioning + OCR; ~70 GB in bf16, or run AWQ/FP8 to leave room for other models. `Qwen2.5-VL-7B` is a great lighter option. |
 | **Chat / RAG answers** | `Qwen/Qwen2.5-VL-32B-Instruct` (reuse) or `Qwen2.5-72B-Instruct` / `Llama-3.3-70B-Instruct` (AWQ 4-bit ≈ 40 GB) | The VLM can double as the chat model, so you only need one served endpoint. |
-| **Text embeddings** | `BAAI/bge-m3` | Multilingual, strong retrieval, long context. Alternatives: `Qwen3-Embedding`, `intfloat/multilingual-e5-large`. ~2 GB. |
+| **Text embeddings (search)** | `BAAI/bge-m3` | Multilingual, strong retrieval, long context. Alternatives: `Qwen3-Embedding`, `intfloat/multilingual-e5-large`. ~2 GB. |
+| **Reranker** | `BAAI/bge-reranker-v2-m3` | Lightweight multilingual cross-encoder; big precision win on noisy chats. ~2 GB. |
 | **(Optional) image-text embeddings** | `jinaai/jina-clip-v2` or SigLIP | For pure visual similarity ("find similar-looking photos"). The default text pipeline already makes images searchable via captions. |
 | **Speech-to-text** | Whisper `large-v3` via `faster-whisper` | Transcribes voice notes + video audio. ~3 GB in float16. |
 
@@ -120,12 +140,14 @@ cp .env.example .env
 telesearch index /path/to/telegram_export
 
 # Skip heavy media steps for a quick text-only index
-telesearch index /path/to/telegram_export --no-videos --no-audio
+telesearch index /path/to/telegram_export --no-videos --no-audio --no-ocr
 
-# Hybrid search
+# Hybrid search (with cross-encoder rerank by default)
 telesearch search "sunset photo from the beach trip"
-telesearch search "invoice" --modality image      # only photos
+telesearch search "invoice" --modality image      # only photo captions
+telesearch search "total amount" --modality ocr    # only text read FROM images
 telesearch search "address" --modality audio       # only voice transcripts
+telesearch search "quick keyword lookup" --no-rerank   # skip reranking for speed
 
 # Ask a question (RAG over the conversation, cites message ids)
 telesearch ask "where did we say we'd meet on Saturday?"
@@ -149,13 +171,14 @@ telesearch/
   config.py              # settings (env / .env)
   models.py              # Message + Chunk data classes
   ingest/telegram_parser.py   # result.json -> Messages
-  media/captioner.py     # VLM image / video-frame captioning
+  media/captioner.py     # VLM image / video-frame captioning + OCR
   media/video.py         # frame extraction (PyAV/ffmpeg)
   media/asr.py           # Whisper transcription
-  index/embeddings.py    # sentence-transformers text embeddings
+  index/embeddings.py    # sentence-transformers text embeddings (bge-m3)
   index/store.py         # LanceDB vectors + BM25 + RRF hybrid search
   index/build.py         # end-to-end indexing pipeline
-  search/retriever.py    # hybrid retrieval
+  search/retriever.py    # hybrid retrieval + rerank orchestration
+  search/reranker.py     # bge-reranker-v2-m3 cross-encoder
   search/rag.py          # question answering with a local chat model
   cli.py                 # `telesearch` command
   ui/app.py              # optional Streamlit UI
@@ -165,8 +188,9 @@ telesearch/
 
 ## Notes & trade-offs
 
-- **First indexing run is the expensive part** (captioning + transcription).
-  After that, search/ask are fast. Media steps are independently toggleable.
+- **First indexing run is the expensive part** (captioning + transcription, and
+  OCR adds a second VLM pass per photo). After that, search/ask are fast. Every
+  media step (`--no-images/--no-videos/--no-audio/--no-ocr`) is toggleable.
 - The pipeline makes images searchable via **text captions** by default. For
   literal "find visually similar images" you can add CLIP/SigLIP embeddings
   (`TELESEARCH_IMAGE_EMBED_MODEL` is wired in config for that extension).

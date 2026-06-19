@@ -28,6 +28,7 @@ def index(
     images: bool = typer.Option(True, help="Caption photos with the VLM."),
     videos: bool = typer.Option(True, help="Summarize and transcribe videos."),
     audio: bool = typer.Option(True, help="Transcribe voice messages."),
+    ocr: bool = typer.Option(True, help="Extract verbatim on-image text (OCR) as a separate chunk."),
 ):
     """Parse an export and build the searchable index."""
     from .ingest import parse_export
@@ -47,6 +48,7 @@ def index(
         do_images=images,
         do_videos=videos,
         do_audio=audio,
+        do_ocr=ocr,
     )
     console.print(
         f"[bold green]Done.[/bold green] Indexed {count} chunks into {settings.db_path}"
@@ -58,15 +60,18 @@ def search(
     query: str = typer.Argument(..., help="Search query."),
     k: int = typer.Option(10, help="Number of results."),
     modality: Optional[str] = typer.Option(
-        None, help="Filter by type: text, image, video, audio."
+        None, help="Filter by type: text, image, video, audio, ocr."
+    ),
+    rerank: Optional[bool] = typer.Option(
+        None, "--rerank/--no-rerank", help="Cross-encoder rerank (default: config)."
     ),
 ):
-    """Hybrid (semantic + keyword) search over the conversation."""
+    """Hybrid (semantic + keyword) search, then cross-encoder rerank."""
     from .search import Retriever
 
     settings = get_settings()
     retriever = Retriever(settings)
-    results = retriever.search(query, k=k, modality=modality)
+    results = retriever.search(query, k=k, modality=modality, rerank=rerank)
 
     if not results:
         console.print("[yellow]No results.[/yellow]")
@@ -116,9 +121,12 @@ def info():
     table.add_column("setting", style="cyan")
     table.add_column("value")
     table.add_row("data_dir", str(settings.data_dir))
-    table.add_row("text_embed_model", settings.text_embed_model)
-    table.add_row("vlm_model", settings.vlm_model)
-    table.add_row("chat_model", settings.chat_model)
+    table.add_row("text_embed_model (search)", settings.text_embed_model)
+    table.add_row("reranker_model", settings.reranker_model)
+    table.add_row("use_reranker", str(settings.use_reranker))
+    table.add_row("enable_ocr", str(settings.enable_ocr))
+    table.add_row("vlm_model (captioning)", settings.vlm_model)
+    table.add_row("chat_model (ask/RAG)", settings.chat_model)
     table.add_row("whisper_model", settings.whisper_model)
     table.add_row("llm_base_url", settings.llm_base_url)
     table.add_row("device", settings.device)

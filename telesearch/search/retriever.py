@@ -9,6 +9,7 @@ from typing import Optional
 from ..config import Settings
 from ..index.embeddings import TextEmbedder
 from ..index.store import VectorStore
+from .reranker import Reranker
 
 
 @dataclass
@@ -41,18 +42,38 @@ class Retriever:
         self.settings = settings
         self.embedder = TextEmbedder(settings)
         self.store = VectorStore(settings.db_path, self.embedder.dim)
+        self._reranker = Reranker(settings) if settings.use_reranker else None
 
     def search(
         self,
         query: str,
         k: int = 10,
         modality: Optional[str] = None,
+        rerank: Optional[bool] = None,
     ) -> list[SearchResult]:
+        """Hybrid retrieve, then (optionally) cross-encoder rerank.
+
+        Pipeline: bge-m3 dense + BM25 -> RRF candidates -> modality filter ->
+        bge-reranker-v2-m3 -> top ``k``.
+        """
+        use_rerank = self.settings.use_reranker if rerank is None else rerank
+
         query_vec = self.embedder.encode([query], is_query=True)[0]
-        # Over-fetch so modality filtering still returns enough results.
-        fetch_k = k * 4 if modality else k
-        rows = self.store.hybrid_search(query, query_vec, k=fetch_k)
+        # Over-fetch a generous candidate pool for the reranker to sift.
+        candidates = self.settings.rerank_candidates if use_rerank else max(k * 4, k)
+        rows = self.store.hybrid_search(query, query_vec, k=candidates)
         results = [SearchResult.from_row(r) for r in rows]
+
         if modality:
             results = [r for r in results if r.modality == modality]
+
+        if use_rerank and self._reranker is not None and results:
+            ranked = self._reranker.rerank(query, [r.content for r in results], top_k=k)
+            reranked: list[SearchResult] = []
+            for idx, score in ranked:
+                r = results[idx]
+                r.score = score
+                reranked.append(r)
+            return reranked
+
         return results[:k]

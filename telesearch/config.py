@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     image_embed_model: str = "jinaai/jina-clip-v2"
     device: str = "cuda"
 
+    # Cross-encoder reranker (re-scores the top candidates for precision).
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    use_reranker: bool = True
+    rerank_candidates: int = 50
+
+    # OCR: extract verbatim on-image text as its own searchable field.
+    enable_ocr: bool = True
+
     # OpenAI-compatible endpoint for the VLM / chat model (vLLM, SGLang, ...).
     llm_base_url: str = "http://localhost:8000/v1"
     llm_api_key: str = "EMPTY"

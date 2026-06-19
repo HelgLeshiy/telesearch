@@ -27,6 +27,7 @@ def _message_to_chunks(
     captioner,
     transcriber,
     num_frames: int,
+    do_ocr: bool = False,
 ) -> list[Chunk]:
     """Turn one message into one or more searchable chunks."""
     chunks: list[Chunk] = []
@@ -60,6 +61,18 @@ def _message_to_chunks(
                 chunks.append(base("image", content, msg.media_path, {"caption": caption}))
         except Exception as exc:  # pragma: no cover - robustness for big exports
             tqdm.write(f"[warn] image caption failed for msg {msg.id}: {exc}")
+
+        if do_ocr:
+            try:
+                ocr_text = captioner.ocr_image(resolved)
+                if ocr_text:
+                    # Separate chunk so on-image text is retrievable on its own
+                    # (great for screenshots, receipts, documents, memes).
+                    chunks.append(
+                        base("ocr", ocr_text, msg.media_path, {"ocr_text": ocr_text})
+                    )
+            except Exception as exc:  # pragma: no cover
+                tqdm.write(f"[warn] image OCR failed for msg {msg.id}: {exc}")
 
     if msg.media_type == "video" and resolved:
         parts: list[str] = []
@@ -107,6 +120,7 @@ def build_index(
     do_images: bool = True,
     do_videos: bool = True,
     do_audio: bool = True,
+    do_ocr: bool = True,
     embed_batch: int = 256,
 ) -> int:
     """Build the LanceDB index from parsed messages. Returns chunk count."""
@@ -146,6 +160,7 @@ def build_index(
                 captioner=captioner if (do_images or do_videos) else None,
                 transcriber=transcriber if (do_audio or do_videos) else None,
                 num_frames=settings.video_frames,
+                do_ocr=do_ocr and do_images,
             )
         )
         if len(buffer) >= embed_batch:

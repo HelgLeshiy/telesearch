@@ -31,6 +31,13 @@ _VIDEO_PROMPT = (
     "any visible text. Do not describe the frames individually."
 )
 
+_OCR_PROMPT = (
+    "Transcribe ALL readable text visible in this image verbatim, preserving "
+    "the original language. Include signs, documents, screenshots, captions and "
+    "handwriting. Output only the transcribed text, with no commentary. If there "
+    "is no readable text, output exactly: NONE"
+)
+
 
 def _image_to_data_url(image: Image.Image, max_side: int = 1024) -> str:
     """Downscale and JPEG-encode an image as a base64 data URL."""
@@ -73,6 +80,15 @@ class VLMCaptioner:
     def caption_image(self, image_path: str | Path) -> str:
         image = Image.open(image_path)
         return self._caption([_image_to_data_url(image)], _IMAGE_PROMPT)
+
+    def ocr_image(self, image_path: str | Path) -> str:
+        """Return verbatim on-image text, or "" if none is detected."""
+        image = Image.open(image_path)
+        text = self._caption([_image_to_data_url(image)], _OCR_PROMPT)
+        cleaned = text.strip()
+        if not cleaned or cleaned.strip().upper() == "NONE":
+            return ""
+        return cleaned
 
     def caption_frames(self, frames: list[Image.Image]) -> str:
         if not frames:
