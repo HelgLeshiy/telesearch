@@ -1,0 +1,55 @@
+[project]
+name = "telesearch"
+version = "0.1.0"
+description = "Local multimodal AI search over large Telegram conversations (text, images, video) using open-weight models."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "lancedb>=0.13.0",
+    "pyarrow>=15.0.0",
+    "sentence-transformers>=3.0.0",
+    "pillow>=10.0.0",
+    "numpy>=1.26.0",
+    "tqdm>=4.66.0",
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    "openai>=1.40.0",
+    "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+# Audio transcription of voice messages / video audio tracks.
+asr = ["faster-whisper>=1.0.0"]
+# Frame extraction from videos (also needs the ffmpeg binary installed on the system).
+video = ["av>=12.0.0"]
+# Optional Streamlit web UI.
+ui = ["streamlit>=1.36.0"]
+# Text extraction from PDF / Office documents.
+documents = [
+    "pypdf>=4.2.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.23",
+]
+all = [
+    "faster-whisper>=1.0.0",
+    "av>=12.0.0",
+    "streamlit>=1.36.0",
+    "pypdf>=4.2.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.23",
+]
+
+[project.scripts]
+telesearch = "telesearch.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["telesearch*"]
