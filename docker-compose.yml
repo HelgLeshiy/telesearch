@@ -32,8 +32,9 @@ services:
     environment:
       HF_HOME: /root/.cache/huggingface
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    # The vllm/vllm-openai image's entrypoint is already ["vllm", "serve"],
+    # so the model is passed as a positional arg (do NOT repeat "serve").
     command:
-      - serve
       - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
       - --host
       - "0.0.0.0"
