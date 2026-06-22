@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # Texts per forward pass when embedding. Smaller = less GPU memory, which
     # matters when the embedder shares a GPU with the vLLM server.
     embed_batch_size: int = 64
+    # Cap the embedding input length (tokens). bge-m3 supports up to 8192, but a
+    # single long text then yields multi-GiB activations and can OOM the GPU.
+    # Our chunks are short, so 512 bounds memory with negligible quality loss.
+    embed_max_seq_length: int = 512
 
     # Cross-encoder reranker (re-scores the top candidates for precision).
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
