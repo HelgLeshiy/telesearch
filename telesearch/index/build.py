@@ -171,7 +171,7 @@ def build_index(
     resume: bool = True,
     rebuild: bool = False,
     workers: int | None = None,
-    embed_batch: int = 256,
+    embed_batch: int | None = None,
 ) -> int:
     """Build the LanceDB index from parsed messages. Returns new chunk count.
 
@@ -187,6 +187,8 @@ def build_index(
     export_root = Path(export_root)
     use_media = do_images or do_videos or do_audio
     workers = workers or settings.media_workers
+    if embed_batch is None:
+        embed_batch = settings.embed_batch_size
 
     captioner = None
     transcriber = None
