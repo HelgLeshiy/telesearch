@@ -211,10 +211,14 @@ of which 117.44 MiB is free ...
 
 To avoid this, `TELESEARCH_VLLM_GPU_MEMORY_UTILIZATION` defaults to `0.80`
 (~18 GiB left free on a 96 GiB card) and indexing embeds in small batches
-(`TELESEARCH_EMBED_BATCH_SIZE=64`). If you still hit OOM, lower either value; if
-vLLM runs on a *dedicated* GPU, raise utilization toward `0.92`. For very large
-exports you can also give vLLM and telesearch separate GPUs by editing the
-`device_ids` under each service in `docker-compose.yml`.
+(`TELESEARCH_EMBED_BATCH_SIZE=64`) with a capped input length
+(`TELESEARCH_EMBED_MAX_SEQ_LENGTH=512`). The length cap matters most: bge-m3
+otherwise allows 8192-token inputs, and a single long message in a batch can
+spike a multi-GiB activation that OOMs the GPU. If you still hit OOM, lower
+those values further; if vLLM runs on a *dedicated* GPU, raise utilization
+toward `0.92`. For very large exports you can also give vLLM and telesearch
+separate GPUs by editing the `device_ids` under each service in
+`docker-compose.yml`.
 
 ---
 

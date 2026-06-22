@@ -25,11 +25,20 @@ class TextEmbedder:
     def _model(self):
         from sentence_transformers import SentenceTransformer
 
-        return SentenceTransformer(
+        model = SentenceTransformer(
             self.settings.text_embed_model,
             device=self.settings.device,
             trust_remote_code=True,
         )
+        # Cap the input length. bge-m3 allows up to 8192 tokens, but a single
+        # long message in a batch then produces multi-GiB activations and can
+        # OOM the GPU (especially when sharing it with the vLLM server). Our
+        # chunks (messages, captions, OCR text, ~1200-char doc pieces) are short,
+        # so a smaller cap bounds memory with no real loss in retrieval quality.
+        max_len = self.settings.embed_max_seq_length
+        if max_len and max_len > 0:
+            model.max_seq_length = min(model.max_seq_length, max_len)
+        return model
 
     @cached_property
     def dim(self) -> int:
