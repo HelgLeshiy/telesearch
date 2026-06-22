@@ -121,6 +121,9 @@ quantize both to 4-bit AWQ.
 - [Docker](https://docs.docker.com/get-docker/) with Compose v2
 - NVIDIA driver + [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 - A GPU available at **index 5** on the host (all services are pinned to that device — edit `device_ids` in `docker-compose.yml` to use a different GPU)
+- A recent NVIDIA driver. The `telesearch` image ships PyTorch built against
+  **CUDA 12.8**, required for Blackwell GPUs (e.g. RTX PRO 6000, `sm_120`); the
+  driver must support CUDA 12.8 or later.
 
 ### 1. Export your Telegram chat
 
