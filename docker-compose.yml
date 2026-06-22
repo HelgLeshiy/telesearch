@@ -42,6 +42,12 @@ services:
       - "8000"
       - --served-model-name
       - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
+      # The model's native 128k context needs ~31 GiB of KV cache, which may
+      # not fit alongside the weights. Cap the context to fit available VRAM.
+      - --max-model-len
+      - "${TELESEARCH_VLM_MAX_MODEL_LEN:-32768}"
+      - --gpu-memory-utilization
+      - "${TELESEARCH_VLM_GPU_MEM_UTIL:-0.92}"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 30s

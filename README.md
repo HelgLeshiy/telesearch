@@ -144,6 +144,12 @@ TELESEARCH_EXPORT_ROOT=/absolute/path/to/your/telegram_export
 Optional: change `TELESEARCH_VLM_MODEL`, `TELESEARCH_CHAT_MODEL`, host ports,
 or add `HUGGING_FACE_HUB_TOKEN` for gated models.
 
+If vLLM fails to start with an error about *available KV cache memory* being
+too small for the model's max sequence length, lower
+`TELESEARCH_VLM_MAX_MODEL_LEN` (default `32768`) or raise
+`TELESEARCH_VLM_GPU_MEM_UTIL` (default `0.92`) — the default 128k context of
+Qwen2.5-VL needs a very large KV cache that may not fit alongside the weights.
+
 ### 3. Build and start services
 
 ```bash
