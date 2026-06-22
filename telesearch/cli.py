@@ -30,8 +30,11 @@ def index(
     audio: bool = typer.Option(True, help="Transcribe voice messages."),
     ocr: bool = typer.Option(True, help="Extract verbatim on-image text (OCR) as a separate chunk."),
     documents: bool = typer.Option(True, help="Extract & index text from file attachments (PDF, Office, text/code)."),
+    rebuild: bool = typer.Option(False, help="Drop the existing index and start over."),
+    resume: bool = typer.Option(True, help="Skip messages that are already indexed."),
+    workers: Optional[int] = typer.Option(None, help="Concurrent media requests (default: config)."),
 ):
-    """Parse an export and build the searchable index."""
+    """Parse an export and build the searchable index (resumable)."""
     from .ingest import parse_export
     from .index.build import build_index
 
@@ -51,9 +54,12 @@ def index(
         do_audio=audio,
         do_ocr=ocr,
         do_documents=documents,
+        rebuild=rebuild,
+        resume=resume,
+        workers=workers,
     )
     console.print(
-        f"[bold green]Done.[/bold green] Indexed {count} chunks into {settings.db_path}"
+        f"[bold green]Done.[/bold green] Indexed {count} new chunks into {settings.db_path}"
     )
 
 
