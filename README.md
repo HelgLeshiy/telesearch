@@ -165,7 +165,9 @@ The stack runs three services:
 | **`ui`** | Streamlit search UI |
 
 All GPU workloads use **physical GPU 5 only** (`device_ids: ["5"]` in
-`docker-compose.yml`). Inside containers that GPU appears as `cuda:0`.
+`docker-compose.yml`). Inside the container that GPU is remapped to `cuda:0`, so
+`TELESEARCH_DEVICE=cuda` is correct — do not set `CUDA_VISIBLE_DEVICES=5` in
+the service environment.
 
 Persistent data lives in Docker volumes: `telesearch-data` (LanceDB index) and
 `huggingface-cache` (downloaded model weights).
