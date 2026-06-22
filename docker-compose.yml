@@ -34,6 +34,15 @@ services:
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
     # The vllm/vllm-openai image's entrypoint is already ["vllm", "serve"],
     # so the model is passed as a positional arg (do NOT repeat "serve").
+    #
+    # Memory notes (why --max-model-len / --limit-mm-per-prompt are set):
+    #   The model's full context is 128k tokens, which vLLM uses by default.
+    #   Reserving KV cache for 128k needs ~31 GiB on top of the ~62 GiB model
+    #   weights, which overflows the GPU. telesearch only sends a few images
+    #   plus a short prompt and caps output at 256 tokens, so a much smaller
+    #   context is plenty. We also disable native-video profiling: video frames
+    #   are sent as ordinary images, never as a native video tensor, so the
+    #   default 1-video warmup just wastes memory.
     command:
       - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
       - --host
@@ -42,6 +51,12 @@ services:
       - "8000"
       - --served-model-name
       - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
+      - --max-model-len
+      - "${TELESEARCH_VLLM_MAX_MODEL_LEN:-32768}"
+      - --gpu-memory-utilization
+      - "${TELESEARCH_VLLM_GPU_MEMORY_UTILIZATION:-0.92}"
+      - --limit-mm-per-prompt
+      - '${TELESEARCH_VLLM_LIMIT_MM_PER_PROMPT:-{"image": 8, "video": 0}}'
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
       interval: 30s

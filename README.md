@@ -172,6 +172,28 @@ the service environment.
 Persistent data lives in Docker volumes: `telesearch-data` (LanceDB index) and
 `huggingface-cache` (downloaded model weights).
 
+#### vLLM GPU memory tuning
+
+By default vLLM would try to reserve KV cache for the model's full 128k-token
+context. For Qwen2.5-VL-32B that needs ~31 GiB on top of the ~62 GiB of weights,
+which overflows the GPU and fails at startup with:
+
+```
+ValueError: To serve at least one request with the model's max seq len (128000),
+(31.25 GiB KV cache is needed, which is larger than the available KV cache memory ...
+```
+
+telesearch only ever sends a few images plus a short prompt and caps output at
+256 tokens, so the `vllm` service sets a smaller context window and disables
+native-video profiling (video frames are sent as ordinary images). Tune these in
+`.env` if needed:
+
+```bash
+TELESEARCH_VLLM_MAX_MODEL_LEN=32768            # raise if you have spare VRAM
+TELESEARCH_VLLM_GPU_MEMORY_UTILIZATION=0.92    # fraction of GPU memory vLLM may use
+TELESEARCH_VLLM_LIMIT_MM_PER_PROMPT={"image": 8, "video": 0}
+```
+
 ---
 
 ## Usage
