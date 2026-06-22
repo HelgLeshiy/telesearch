@@ -10,8 +10,8 @@ photos*, *summarizes and transcribes the videos*, *transcribes voice messages*,
 documents* (PDF, Word, Excel, PowerPoint, text/code/CSV) — then puts everything
 into one searchable index. Then you can:
 
-- **Search** semantically + by keyword: `telesearch search "the receipt from the sushi place"`
-- **Ask** questions in natural language (RAG): `telesearch ask "what hotel did we book in Rome?"`
+- **Search** semantically + by keyword: `docker compose run --rm telesearch search "the receipt from the sushi place"`
+- **Ask** questions in natural language (RAG): `docker compose run --rm telesearch ask "what hotel did we book in Rome?"`
 
 Everything runs locally. Nothing leaves your machine.
 
@@ -87,9 +87,10 @@ Why this design:
   *inside* a file someone shared. Genuinely binary files are skipped.
 - **Embedded vector DB (LanceDB)** = no separate database server to run; the
   index is just files on disk, which scales fine to very large chats.
-- **Open-weight, OpenAI-compatible serving.** The VLM/chat model is reached
-  through a standard `/v1/chat/completions` endpoint, so you can serve any open
-  model with vLLM/SGLang/Ollama and swap models freely.
+- **Open-weight, OpenAI-compatible serving.** The VLM/chat model runs in the
+  `vllm` Compose service and is reached through a standard
+  `/v1/chat/completions` endpoint — swap models via `.env` without changing
+  application code.
 
 ---
 
@@ -115,59 +116,94 @@ quantize both to 4-bit AWQ.
 
 ## Setup
 
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) with Compose v2
+- NVIDIA driver + [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+- A GPU available at **index 5** on the host (all services are pinned to that device — edit `device_ids` in `docker-compose.yml` to use a different GPU)
+
 ### 1. Export your Telegram chat
+
 In **Telegram Desktop**: ☰ menu → **Settings → Advanced → Export Telegram
 data** → choose the chat, enable **Photos**, **Video files**, **Voice
 messages**, and set format to **Machine-readable JSON**. You'll get a folder
 with `result.json` plus media sub-folders.
 
-### 2. Install
-```bash
-pip install -e ".[all]"      # core + asr + video + ui
-# Also install the system ffmpeg binary for video frame extraction:
-#   sudo apt-get install ffmpeg
-```
+### 2. Configure
 
-### 3. Serve an open-weight VLM (OpenAI-compatible)
-```bash
-pip install vllm
-vllm serve Qwen/Qwen2.5-VL-32B-Instruct --port 8000
-```
-
-### 4. Configure
 ```bash
 cp .env.example .env
-# edit .env: set TELESEARCH_LLM_BASE_URL / model names / device if needed
 ```
+
+Edit `.env` and set at minimum:
+
+```bash
+TELESEARCH_EXPORT_ROOT=/absolute/path/to/your/telegram_export
+```
+
+Optional: change `TELESEARCH_VLM_MODEL`, `TELESEARCH_CHAT_MODEL`, host ports,
+or add `HUGGING_FACE_HUB_TOKEN` for gated models.
+
+### 3. Build and start services
+
+```bash
+docker compose build
+
+# VLM server (downloads the model on first run — can take a while)
+docker compose up -d vllm
+
+# Optional web UI at http://localhost:8501
+docker compose up -d ui
+```
+
+The stack runs three services:
+
+| Service | Role |
+|---|---|
+| **`vllm`** | OpenAI-compatible VLM/chat server (Qwen2.5-VL by default) |
+| **`telesearch`** | CLI for indexing, search, and ask (invoked via `docker compose run`) |
+| **`ui`** | Streamlit search UI |
+
+All GPU workloads use **physical GPU 5 only** (`device_ids: ["5"]` in
+`docker-compose.yml`). Inside containers that GPU appears as `cuda:0`.
+
+Persistent data lives in Docker volumes: `telesearch-data` (LanceDB index) and
+`huggingface-cache` (downloaded model weights).
 
 ---
 
 ## Usage
 
+CLI commands run inside the `telesearch` container. Your export is mounted
+read-only at `/export` (from `TELESEARCH_EXPORT_ROOT` in `.env`).
+
 ```bash
 # Build the index (captions images, summarizes+transcribes videos, transcribes voice)
-telesearch index /path/to/telegram_export
+docker compose run --rm telesearch index /export
 
 # Skip heavy media steps for a quick text-only index (documents need no GPU)
-telesearch index /path/to/telegram_export --no-videos --no-audio --no-ocr
+docker compose run --rm telesearch index /export --no-videos --no-audio --no-ocr
 
-# Index ONLY typed text + documents (no GPU / VLM server needed at all)
-telesearch index /path/to/telegram_export --no-images --no-videos --no-audio --no-ocr
+# Index ONLY typed text + documents (no VLM server needed)
+docker compose run --rm --no-deps telesearch index /export --no-images --no-videos --no-audio --no-ocr
 
 # Hybrid search (with cross-encoder rerank by default)
-telesearch search "sunset photo from the beach trip"
-telesearch search "invoice" --modality image      # only photo captions
-telesearch search "total amount" --modality ocr    # only text read FROM images
-telesearch search "quarterly budget" --modality document  # only file contents
-telesearch search "address" --modality audio       # only voice transcripts
-telesearch search "quick keyword lookup" --no-rerank   # skip reranking for speed
+docker compose run --rm telesearch search "sunset photo from the beach trip"
+docker compose run --rm telesearch search "invoice" --modality image      # only photo captions
+docker compose run --rm telesearch search "total amount" --modality ocr    # only text read FROM images
+docker compose run --rm telesearch search "quarterly budget" --modality document  # only file contents
+docker compose run --rm telesearch search "address" --modality audio       # only voice transcripts
+docker compose run --rm telesearch search "quick keyword lookup" --no-rerank   # skip reranking for speed
 
 # Ask a question (RAG over the conversation, cites message ids)
-telesearch ask "where did we say we'd meet on Saturday?"
+docker compose run --rm telesearch ask "where did we say we'd meet on Saturday?"
 
 # Show config + index status
-telesearch info
+docker compose run --rm telesearch info
 ```
+
+`--no-deps` skips starting the `vllm` service — use it for text-only indexing
+when you don't need captioning or OCR.
 
 ### Indexing a large export (thousands of photos/videos)
 
@@ -190,27 +226,48 @@ thousands of VLM/Whisper calls. The build is designed for that:
 
 ```bash
 # Start (or resume) a full index; safe to Ctrl-C and re-run with the SAME flags
-telesearch index /path/to/export --workers 12
+docker compose run --rm telesearch index /export --workers 12
 
 # Force a clean rebuild
-telesearch index /path/to/export --rebuild
+docker compose run --rm telesearch index /export --rebuild
 ```
 
 Note: resume tracks progress per message, so re-run with the *same* flags to
 continue. If you change which modalities to index, use `--rebuild` (changing
 flags mid-way could otherwise skip messages whose media wasn't processed yet).
 
-### Web UI (optional)
+### Web UI
+
 ```bash
-export TELESEARCH_EXPORT_ROOT=/path/to/telegram_export   # to render thumbnails
-streamlit run telesearch/ui/app.py
+docker compose up -d ui
 ```
+
+Open http://localhost:8501. Thumbnails require `TELESEARCH_EXPORT_ROOT` to be
+set in `.env` (the export is mounted at `/export` inside the container).
+
+### Development (without Docker)
+
+For local hacking on the Python package:
+
+```bash
+pip install -e ".[all]" pytest   # also needs the ffmpeg system binary
+cp .env.example .env
+python3 -m telesearch.cli index /path/to/export
+python3 -m pytest
+```
+
+Serve a VLM yourself (or point `TELESEARCH_LLM_BASE_URL` at an existing
+OpenAI-compatible endpoint) when running outside Compose.
 
 ---
 
 ## Project layout
 
 ```
+Dockerfile               # telesearch image (PyTorch CUDA + ffmpeg)
+docker-compose.yml       # vllm + telesearch CLI + Streamlit UI (GPU 5)
+.env.example             # configuration template
+
 telesearch/
   config.py              # settings (env / .env)
   models.py              # Message + Chunk data classes
