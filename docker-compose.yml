@@ -1,0 +1,107 @@
+# telesearch stack — pins all GPU workloads to physical GPU 5 only.
+#
+# Prerequisites:
+#   - NVIDIA driver + nvidia-container-toolkit
+#   - Copy .env.example to .env and set TELESEARCH_EXPORT_ROOT
+#
+# Examples:
+#   docker compose build
+#   docker compose up -d vllm          # start VLM server (downloads model on first run)
+#   docker compose run --rm telesearch index /export
+#   docker compose run --rm telesearch search "beach photo"
+#   docker compose up -d ui            # Streamlit on http://localhost:8501
+
+x-gpu-5: &gpu-5
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["5"]
+            capabilities: [gpu]
+  environment:
+    NVIDIA_VISIBLE_DEVICES: "5"
+    CUDA_VISIBLE_DEVICES: "5"
+
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    <<: *gpu-5
+    ports:
+      - "${TELESEARCH_VLLM_HOST_PORT:-8000}:8000"
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "5"
+      CUDA_VISIBLE_DEVICES: "5"
+      HF_HOME: /root/.cache/huggingface
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    command:
+      - --model
+      - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --served-model-name
+      - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 600s
+    restart: unless-stopped
+
+  telesearch:
+    build: .
+    <<: *gpu-5
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "5"
+      CUDA_VISIBLE_DEVICES: "5"
+      TELESEARCH_DATA_DIR: /app/data
+      TELESEARCH_LLM_BASE_URL: http://vllm:8000/v1
+      TELESEARCH_DEVICE: cuda
+      TELESEARCH_WHISPER_COMPUTE: float16
+    volumes:
+      - telesearch-data:/app/data
+      - ${TELESEARCH_EXPORT_ROOT:-./export}:/export:ro
+      - huggingface-cache:/root/.cache/huggingface
+    depends_on:
+      vllm:
+        condition: service_healthy
+    profiles:
+      - cli
+
+  ui:
+    build: .
+    <<: *gpu-5
+    entrypoint: ["streamlit", "run", "telesearch/ui/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    ports:
+      - "${TELESEARCH_UI_HOST_PORT:-8501}:8501"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "5"
+      CUDA_VISIBLE_DEVICES: "5"
+      TELESEARCH_DATA_DIR: /app/data
+      TELESEARCH_EXPORT_ROOT: /export
+      TELESEARCH_LLM_BASE_URL: http://vllm:8000/v1
+      TELESEARCH_DEVICE: cuda
+      TELESEARCH_WHISPER_COMPUTE: float16
+    volumes:
+      - telesearch-data:/app/data
+      - ${TELESEARCH_EXPORT_ROOT:-./export}:/export:ro
+      - huggingface-cache:/root/.cache/huggingface
+    depends_on:
+      vllm:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  telesearch-data:
+  huggingface-cache:

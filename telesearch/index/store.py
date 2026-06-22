@@ -42,7 +42,7 @@ class VectorStore:
         self.db_path.mkdir(parents=True, exist_ok=True)
         self.dim = dim
         self.db = lancedb.connect(str(self.db_path))
-        if TABLE_NAME in self.db.list_tables():
+        if TABLE_NAME in self.db.list_tables().tables:
             self.table = self.db.open_table(TABLE_NAME)
         else:
             self.table = self.db.create_table(TABLE_NAME, schema=_schema(dim))
