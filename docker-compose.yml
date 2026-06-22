@@ -53,8 +53,13 @@ services:
       - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
       - --max-model-len
       - "${TELESEARCH_VLLM_MAX_MODEL_LEN:-32768}"
+      # Default leaves headroom on the GPU for telesearch's own local models
+      # (bge-m3 embeddings + Whisper) since the telesearch/ui services share the
+      # SAME physical GPU as vLLM. At 0.92 vLLM grabbed ~88 GiB of a 96 GiB card
+      # and telesearch then OOM'd. ~0.80 keeps ~18 GiB free for those models.
+      # Raise it toward 0.92 if vLLM runs on a dedicated GPU.
       - --gpu-memory-utilization
-      - "${TELESEARCH_VLLM_GPU_MEMORY_UTILIZATION:-0.92}"
+      - "${TELESEARCH_VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
       - --limit-mm-per-prompt
       - '${TELESEARCH_VLLM_LIMIT_MM_PER_PROMPT:-{"image": 8, "video": 0}}'
     healthcheck:
@@ -76,6 +81,8 @@ services:
       TELESEARCH_LLM_BASE_URL: http://vllm:8000/v1
       TELESEARCH_DEVICE: cuda
       TELESEARCH_WHISPER_COMPUTE: float16
+      # Reduce CUDA allocator fragmentation when sharing the GPU with vLLM.
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     volumes:
       - telesearch-data:/app/data
       - ${TELESEARCH_EXPORT_ROOT:-./export}:/export:ro
@@ -101,6 +108,8 @@ services:
       TELESEARCH_LLM_BASE_URL: http://vllm:8000/v1
       TELESEARCH_DEVICE: cuda
       TELESEARCH_WHISPER_COMPUTE: float16
+      # Reduce CUDA allocator fragmentation when sharing the GPU with vLLM.
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     volumes:
       - telesearch-data:/app/data
       - ${TELESEARCH_EXPORT_ROOT:-./export}:/export:ro

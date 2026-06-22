@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     text_embed_model: str = "BAAI/bge-m3"
     image_embed_model: str = "jinaai/jina-clip-v2"
     device: str = "cuda"
+    # Texts per forward pass when embedding. Smaller = less GPU memory, which
+    # matters when the embedder shares a GPU with the vLLM server.
+    embed_batch_size: int = 64
 
     # Cross-encoder reranker (re-scores the top candidates for precision).
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
