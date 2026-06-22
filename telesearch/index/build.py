@@ -153,6 +153,11 @@ def _message_to_chunks(
     return chunks
 
 
+def _iter_blocks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
 def build_index(
     messages: Iterable[Message],
     export_root: str | Path,
@@ -163,10 +168,25 @@ def build_index(
     do_audio: bool = True,
     do_ocr: bool = True,
     do_documents: bool = True,
+    resume: bool = True,
+    rebuild: bool = False,
+    workers: int | None = None,
     embed_batch: int = 256,
 ) -> int:
-    """Build the LanceDB index from parsed messages. Returns chunk count."""
+    """Build the LanceDB index from parsed messages. Returns new chunk count.
+
+    The build is **resumable**: messages already present in the index are
+    skipped (unless ``rebuild=True``), and each block is persisted as it is
+    processed, so a long run over thousands of media files can be safely
+    interrupted and restarted. Media understanding (remote VLM captioning/OCR,
+    frame extraction) runs **concurrently** across ``workers`` threads to keep
+    the GPU server busy; local Whisper transcription is serialized internally.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     export_root = Path(export_root)
+    use_media = do_images or do_videos or do_audio
+    workers = workers or settings.media_workers
 
     captioner = None
     transcriber = None
@@ -182,36 +202,55 @@ def build_index(
     embedder = TextEmbedder(settings)
     store = VectorStore(settings.db_path, embedder.dim)
 
-    buffer: list[Chunk] = []
-    total = 0
+    if rebuild:
+        store.drop()
+        seen: set[int] = set()
+    else:
+        seen = store.existing_message_ids() if resume else set()
 
-    def flush() -> None:
-        nonlocal total
-        if not buffer:
-            return
-        vectors = embedder.encode([c.content for c in buffer], batch_size=embed_batch)
-        store.add([c.to_row() for c in buffer], vectors)
-        total += len(buffer)
-        buffer.clear()
+    messages = [m for m in messages if m.id not in seen]
+    if seen:
+        tqdm.write(f"[resume] skipping {len(seen)} already-indexed messages")
 
-    for msg in tqdm(messages, desc="indexing", unit="msg"):
-        buffer.extend(
-            _message_to_chunks(
-                msg,
-                export_root,
-                captioner=captioner if (do_images or do_videos) else None,
-                transcriber=transcriber if (do_audio or do_videos) else None,
-                num_frames=settings.video_frames,
-                do_ocr=do_ocr and do_images,
-                do_documents=do_documents,
-                doc_chunk_chars=settings.doc_chunk_chars,
-                doc_chunk_overlap=settings.doc_chunk_overlap,
-                doc_max_chars=settings.doc_max_chars,
-            )
+    def process(msg: Message) -> list[Chunk]:
+        return _message_to_chunks(
+            msg,
+            export_root,
+            captioner=captioner if (do_images or do_videos) else None,
+            transcriber=transcriber if (do_audio or do_videos) else None,
+            num_frames=settings.video_frames,
+            do_ocr=do_ocr and do_images,
+            do_documents=do_documents,
+            doc_chunk_chars=settings.doc_chunk_chars,
+            doc_chunk_overlap=settings.doc_chunk_overlap,
+            doc_max_chars=settings.doc_max_chars,
         )
-        if len(buffer) >= embed_batch:
-            flush()
 
-    flush()
+    total = 0
+    # Block size balances throughput (concurrency window) with how often we
+    # persist progress for resumability.
+    block_size = max(embed_batch, workers * 4)
+    pool = ThreadPoolExecutor(max_workers=workers) if (use_media and workers > 1) else None
+
+    try:
+        with tqdm(total=len(messages), desc="indexing", unit="msg") as bar:
+            for block in _iter_blocks(messages, block_size):
+                if pool is not None:
+                    results = list(pool.map(process, block))
+                else:
+                    results = [process(m) for m in block]
+                bar.update(len(block))
+
+                chunks = [c for group in results for c in group]
+                if chunks:
+                    vectors = embedder.encode(
+                        [c.content for c in chunks], batch_size=embed_batch
+                    )
+                    store.add([c.to_row() for c in chunks], vectors)
+                    total += len(chunks)
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
+
     store.build_fts()
     return total

@@ -169,6 +169,37 @@ telesearch ask "where did we say we'd meet on Saturday?"
 telesearch info
 ```
 
+### Indexing a large export (thousands of photos/videos)
+
+A big chat export (e.g. ~3,500 photos + ~1,000 videos + ~500 files) means
+thousands of VLM/Whisper calls. The build is designed for that:
+
+- **Resumable.** Each block is persisted as it completes and already-indexed
+  messages are skipped, so you can stop/restart freely. Just re-run the same
+  command to continue; use `--rebuild` to start fresh.
+- **Concurrent.** Remote VLM caption/OCR requests run across `--workers`
+  threads (default 8) to keep the GPU server batching; local Whisper is
+  serialized internally. Raise `--workers` if your vLLM server has spare
+  capacity.
+- **Robust.** Media that wasn't downloaded (Telegram's `(File not included…)`
+  placeholder), stickers, and unreadable/binary files are skipped without
+  failing the run.
+- **MIME-aware.** Images/videos that were sent as plain *files* (so they live in
+  the `files/` folder) are still captioned/transcribed by their MIME type, not
+  treated as documents.
+
+```bash
+# Start (or resume) a full index; safe to Ctrl-C and re-run with the SAME flags
+telesearch index /path/to/export --workers 12
+
+# Force a clean rebuild
+telesearch index /path/to/export --rebuild
+```
+
+Note: resume tracks progress per message, so re-run with the *same* flags to
+continue. If you change which modalities to index, use `--rebuild` (changing
+flags mid-way could otherwise skip messages whose media wasn't processed yet).
+
 ### Web UI (optional)
 ```bash
 export TELESEARCH_EXPORT_ROOT=/path/to/telegram_export   # to render thumbnails

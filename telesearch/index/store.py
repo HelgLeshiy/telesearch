@@ -66,6 +66,22 @@ class VectorStore:
     def count(self) -> int:
         return self.table.count_rows()
 
+    def existing_message_ids(self) -> set[int]:
+        """Return the set of message ids already present (for resumable builds)."""
+        if self.count() == 0:
+            return set()
+        try:
+            ids = self.table.to_arrow().column("message_id").to_pylist()
+            return set(ids)
+        except Exception:
+            return set()
+
+    def drop(self) -> None:
+        """Delete all indexed data (for a full rebuild)."""
+        self.table = self.db.create_table(
+            TABLE_NAME, schema=_schema(self.dim), mode="overwrite"
+        )
+
     def _vector_search(self, query_vec: np.ndarray, k: int) -> list[dict]:
         return (
             self.table.search(query_vec.astype(np.float32))

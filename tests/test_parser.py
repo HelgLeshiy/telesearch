@@ -87,3 +87,57 @@ def test_parse_export_basic(tmp_path):
     assert by_id[6].media_path == "files/report.pdf"
     assert by_id[6].file_name == "report.pdf"
     assert by_id[6].mime_type == "application/pdf"
+
+
+def test_placeholder_and_mime_routing(tmp_path):
+    data = {
+        "name": "Chat",
+        "messages": [
+            # Sticker that wasn't downloaded -> no usable media.
+            {
+                "id": 10,
+                "type": "message",
+                "from": "Oleg",
+                "date_unixtime": "1",
+                "text": "",
+                "media_type": "sticker",
+                "mime_type": "image/webp",
+                "file": "(File not included. Change data exporting settings to download.)",
+            },
+            # Image sent as a plain file -> routed to the photo handler.
+            {
+                "id": 11,
+                "type": "message",
+                "from": "Oleg",
+                "date_unixtime": "2",
+                "file": "files/pic.jpg",
+                "mime_type": "image/jpeg",
+            },
+            # Video sent as a plain file -> routed to the video handler.
+            {
+                "id": 12,
+                "type": "message",
+                "from": "Oleg",
+                "date_unixtime": "3",
+                "file": "files/clip.mov",
+                "mime_type": "video/quicktime",
+            },
+            # Real video message.
+            {
+                "id": 13,
+                "type": "message",
+                "from": "Oleg",
+                "date_unixtime": "4",
+                "media_type": "video_message",
+                "file": "round_video_messages/r.mp4",
+            },
+        ],
+    }
+    (tmp_path / "result.json").write_text(json.dumps(data), encoding="utf-8")
+    by_id = {m.id: m for m in parse_export(tmp_path)}
+
+    assert by_id[10].media_type is None  # placeholder dropped
+    assert by_id[10].media_path is None
+    assert by_id[11].media_type == "photo"
+    assert by_id[12].media_type == "video"
+    assert by_id[13].media_type == "video"

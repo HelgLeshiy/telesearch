@@ -31,25 +31,54 @@ def _flatten_text(text: Any) -> str:
     return ""
 
 
+# Telegram writes this placeholder when the media itself was not exported.
+_NOT_INCLUDED = "(File not included"
+
+
+def _is_real_path(path: Any) -> bool:
+    return isinstance(path, str) and bool(path) and not path.startswith(_NOT_INCLUDED)
+
+
 def _media_for(msg: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Return ``(media_type, relative_path)`` for a message, if any."""
-    if "photo" in msg:
+    """Return ``(media_type, relative_path)`` for a message, if any.
+
+    Normalizes Telegram's many media shapes into four handler types:
+    ``photo`` / ``video`` / ``voice`` / ``file`` (plus ``sticker``, which the
+    pipeline currently skips). Files sent as plain attachments are routed by
+    MIME type so that e.g. an image dropped into the ``files/`` folder is still
+    captioned like a photo. Media that was not downloaded (placeholder path) is
+    treated as having no media.
+    """
+    if _is_real_path(msg.get("photo")):
         return "photo", msg["photo"]
 
     media_type = msg.get("media_type")
     path = msg.get("file")
-    if not path:
+    if not _is_real_path(path):
         return None, None
 
-    mapping = {
+    known = {
         "video_file": "video",
         "video_message": "video",
         "animation": "video",
         "voice_message": "voice",
         "audio_file": "voice",
     }
-    normalized = mapping.get(media_type or "", "file")
-    return normalized, path
+    if media_type in known:
+        return known[media_type], path
+    if media_type == "sticker":
+        return "sticker", path
+
+    # Generic attachment: route by MIME so images/videos/audio sent as files
+    # are processed by the right handler instead of treated as documents.
+    mime = (msg.get("mime_type") or "").lower()
+    if mime.startswith("image/") and not mime.endswith("webp"):
+        return "photo", path
+    if mime.startswith("video/"):
+        return "video", path
+    if mime.startswith("audio/"):
+        return "voice", path
+    return "file", path
 
 
 def parse_export(export_path: str | Path) -> Iterator[Message]:

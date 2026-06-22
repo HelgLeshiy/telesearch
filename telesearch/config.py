@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     whisper_compute: str = "float16"
     video_frames: int = 4
 
+    # Concurrent in-flight media (VLM caption/OCR) requests during indexing.
+    media_workers: int = 8
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "lancedb"
