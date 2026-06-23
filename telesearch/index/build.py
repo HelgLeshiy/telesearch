@@ -158,6 +158,46 @@ def _iter_blocks(items: list, size: int):
         yield items[i : i + size]
 
 
+def _process_block(block, process, pool, bar, item_timeout: float):
+    """Run ``process`` over a block, bounding each message by ``item_timeout``.
+
+    A message that hangs (e.g. a corrupt image whose decode never returns, or a
+    stuck remote call) is logged and skipped instead of freezing the whole run.
+    Progress is reported per message so a slow item is visible immediately.
+    """
+    from concurrent.futures import TimeoutError as FuturesTimeout
+
+    timeout = item_timeout if item_timeout and item_timeout > 0 else None
+    results: list = []
+
+    if pool is None:
+        for msg in block:
+            try:
+                results.append(process(msg))
+            except Exception as exc:  # pragma: no cover - robustness for big exports
+                tqdm.write(f"[warn] msg {msg.id} failed: {exc}")
+                results.append([])
+            bar.update(1)
+        return results
+
+    futures = [(msg, pool.submit(process, msg)) for msg in block]
+    for msg, fut in futures:
+        try:
+            results.append(fut.result(timeout=timeout))
+        except FuturesTimeout:
+            tqdm.write(
+                f"[warn] msg {msg.id} timed out after {timeout:.0f}s; skipping. "
+                f"(stuck media/document — raise TELESEARCH_MEDIA_ITEM_TIMEOUT if legit)"
+            )
+            fut.cancel()
+            results.append([])
+        except Exception as exc:  # pragma: no cover - robustness for big exports
+            tqdm.write(f"[warn] msg {msg.id} failed: {exc}")
+            results.append([])
+        bar.update(1)
+    return results
+
+
 def build_index(
     messages: Iterable[Message],
     export_root: str | Path,
@@ -185,7 +225,6 @@ def build_index(
     from concurrent.futures import ThreadPoolExecutor
 
     export_root = Path(export_root)
-    use_media = do_images or do_videos or do_audio
     workers = workers or settings.media_workers
     if embed_batch is None:
         embed_batch = settings.embed_batch_size
@@ -238,16 +277,16 @@ def build_index(
     # Block size balances throughput (concurrency window) with how often we
     # persist progress for resumability.
     block_size = max(embed_batch, workers * 4)
-    pool = ThreadPoolExecutor(max_workers=workers) if (use_media and workers > 1) else None
+    # Always use a pool so the per-message timeout guard applies even at
+    # workers=1 (a single hung file would otherwise stall the whole build).
+    pool = ThreadPoolExecutor(max_workers=max(workers, 1))
 
     try:
         with tqdm(total=len(messages), desc="indexing", unit="msg") as bar:
             for block in _iter_blocks(messages, block_size):
-                if pool is not None:
-                    results = list(pool.map(process, block))
-                else:
-                    results = [process(m) for m in block]
-                bar.update(len(block))
+                results = _process_block(
+                    block, process, pool, bar, settings.media_item_timeout
+                )
 
                 chunks = [c for group in results for c in group]
                 if chunks:
@@ -257,8 +296,7 @@ def build_index(
                     store.add([c.to_row() for c in chunks], vectors)
                     total += len(chunks)
     finally:
-        if pool is not None:
-            pool.shutdown(wait=True)
+        pool.shutdown(wait=False, cancel_futures=True)
 
     store.build_fts()
     return total
