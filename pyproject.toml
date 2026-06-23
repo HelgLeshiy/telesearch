@@ -18,6 +18,9 @@ dependencies = [
     "pydantic-settings>=2.3.0",
     "openai>=1.40.0",
     "python-dateutil>=2.9.0",
+    # Process pool with per-task timeouts so a hung media decode (e.g. a corrupt
+    # image in PIL) can be killed instead of permanently wedging a worker.
+    "pebble>=5.0.0",
 ]
 
 [project.optional-dependencies]

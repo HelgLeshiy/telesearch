@@ -11,6 +11,8 @@ pydantic>=2.7.0
 pydantic-settings>=2.3.0
 openai>=1.40.0
 python-dateutil>=2.9.0
+# Killable process pool for media decoding (so a hung file can't wedge a worker):
+pebble>=5.0.0
 
 # Optional extras (install as needed)
 # Audio transcription:

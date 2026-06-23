@@ -120,16 +120,23 @@ class VLMCaptioner:
             image_path, max_megapixels=self.settings.max_image_megapixels
         )
 
+    def caption_data_url(self, data_url: str) -> str:
+        """Caption an already-decoded image (passed as a data URL)."""
+        return self._caption([data_url], _IMAGE_PROMPT)
+
+    def ocr_data_url(self, data_url: str) -> str:
+        """OCR an already-decoded image; "" if no readable text."""
+        cleaned = self._caption([data_url], _OCR_PROMPT).strip()
+        if not cleaned or cleaned.upper() == "NONE":
+            return ""
+        return cleaned
+
     def caption_image(self, image_path: str | Path) -> str:
-        return self._caption([self._data_url(image_path)], _IMAGE_PROMPT)
+        return self.caption_data_url(self._data_url(image_path))
 
     def ocr_image(self, image_path: str | Path) -> str:
         """Return verbatim on-image text, or "" if none is detected."""
-        text = self._caption([self._data_url(image_path)], _OCR_PROMPT)
-        cleaned = text.strip()
-        if not cleaned or cleaned.strip().upper() == "NONE":
-            return ""
-        return cleaned
+        return self.ocr_data_url(self._data_url(image_path))
 
     def caption_frames(self, frames: list[Image.Image]) -> str:
         if not frames:
