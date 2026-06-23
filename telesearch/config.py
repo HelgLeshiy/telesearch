@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     llm_api_key: str = "EMPTY"
     vlm_model: str = "Qwen/Qwen2.5-VL-32B-Instruct"
     chat_model: str = "Qwen/Qwen2.5-VL-32B-Instruct"
+    # Per-request timeout (seconds) and retry count for VLM/chat calls. Without
+    # an explicit timeout the OpenAI client waits up to 10 minutes per request,
+    # so a single stuck call freezes the whole indexing block.
+    llm_request_timeout: float = 120.0
+    llm_max_retries: int = 2
 
     # Audio transcription.
     whisper_model: str = "large-v3"
@@ -63,6 +68,15 @@ class Settings(BaseSettings):
 
     # Concurrent in-flight media (VLM caption/OCR) requests during indexing.
     media_workers: int = 8
+    # Hard wall-clock budget (seconds) for processing a single message during
+    # indexing. A message that exceeds it (e.g. a corrupt image whose decode
+    # hangs, or a pathologically slow document/transcription) is logged and
+    # skipped instead of stalling the entire run. 0 disables the guard.
+    media_item_timeout: float = 300.0
+    # Largest image (in megapixels) we will decode for captioning/OCR. Bigger
+    # images are downscaled by the JPEG decoder before full decode; this also
+    # guards against decompression-bomb images that can hang or exhaust memory.
+    max_image_megapixels: float = 50.0
 
     @property
     def db_path(self) -> Path:
