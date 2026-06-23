@@ -1,5 +1,6 @@
 """Tests for indexing robustness: per-message timeout/skip and image guards."""
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -8,8 +9,9 @@ import io
 
 from PIL import Image
 
-from telesearch.index.build import _process_block
+from telesearch.index.build import _HangWatchdog, _describe, _process_block
 from telesearch.media.captioner import _path_to_data_url
+from telesearch.models import Message
 
 
 class _NullBar:
@@ -76,6 +78,37 @@ def test_process_block_without_pool():
     results = _process_block([_msg(1), _msg(2)], process, None, bar, item_timeout=0)
     assert bar.n == 2
     assert results == [[1], []]
+
+
+def test_describe_message():
+    photo = Message(
+        id=1, chat="c", sender="s", timestamp=0, date_str="",
+        media_type="photo", media_path="photos/x.jpg",
+    )
+    assert "photo" in _describe(photo)
+    assert "photos/x.jpg" in _describe(photo)
+
+    text = Message(id=2, chat="c", sender="s", timestamp=0, date_str="", text="hi")
+    assert _describe(text) == "text-only"
+
+
+def test_hang_watchdog_fires_and_resets():
+    fired = threading.Event()
+    inflight = {42: "photo, photos/stuck.jpg"}
+
+    wd = _HangWatchdog(timeout=0.1, inflight=inflight)
+    # Patch the dump so the test doesn't spam stderr; just record that it fired.
+    wd._fire = lambda: (fired.set(), wd.cancel())  # type: ignore[assignment]
+    wd.reset()
+    assert fired.wait(2.0), "watchdog should fire when no progress is made"
+    wd.cancel()
+
+
+def test_hang_watchdog_disabled_when_zero():
+    wd = _HangWatchdog(timeout=0, inflight={})
+    wd.reset()
+    assert wd._timer is None
+    wd.cancel()
 
 
 def test_path_to_data_url_reads_image(tmp_path):
