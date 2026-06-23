@@ -44,6 +44,11 @@ class TextEmbedder:
     def dim(self) -> int:
         return int(self._model.get_sentence_embedding_dimension())
 
+    @property
+    def max_seq_length(self) -> int:
+        """Effective max input length (tokens) after the configured cap."""
+        return int(self._model.max_seq_length)
+
     def encode(
         self,
         texts: list[str],

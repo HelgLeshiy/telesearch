@@ -203,6 +203,12 @@ def build_index(
 
     embedder = TextEmbedder(settings)
     store = VectorStore(settings.db_path, embedder.dim)
+    # Surface the effective embedding memory knobs so a stale image (built before
+    # these were added) is obvious: if you don't see this line, rebuild the image.
+    tqdm.write(
+        f"[embed] {settings.text_embed_model} on {settings.device} | "
+        f"batch_size={embed_batch} | max_seq_length={embedder.max_seq_length}"
+    )
 
     if rebuild:
         store.drop()
