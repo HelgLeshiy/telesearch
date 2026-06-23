@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -22,6 +21,7 @@ class SearchResult:
     content: str
     media_path: Optional[str]
     score: float
+    chat: str = ""
 
     @classmethod
     def from_row(cls, row: dict) -> "SearchResult":
@@ -34,6 +34,7 @@ class SearchResult:
             content=row.get("content", ""),
             media_path=row.get("media_path") or None,
             score=float(row.get("score", row.get("_relevance_score", 0.0) or 0.0)),
+            chat=row.get("chat", ""),
         )
 
 
@@ -50,13 +51,19 @@ class Retriever:
         k: int = 10,
         modality: Optional[str] = None,
         rerank: Optional[bool] = None,
+        rerank_query: Optional[str] = None,
     ) -> list[SearchResult]:
         """Hybrid retrieve, then (optionally) cross-encoder rerank.
 
         Pipeline: bge-m3 dense + BM25 -> RRF candidates -> modality filter ->
         bge-reranker-v2-m3 -> top ``k``.
+
+        ``rerank_query`` lets the caller retrieve candidates with one query
+        (e.g. a HyDE-expanded one for better recall) but rerank them against a
+        different, sharper query (e.g. the user's original question).
         """
         use_rerank = self.settings.use_reranker if rerank is None else rerank
+        rerank_query = rerank_query or query
 
         query_vec = self.embedder.encode([query], is_query=True)[0]
         # Over-fetch a generous candidate pool for the reranker to sift.
@@ -68,7 +75,9 @@ class Retriever:
             results = [r for r in results if r.modality == modality]
 
         if use_rerank and self._reranker is not None and results:
-            ranked = self._reranker.rerank(query, [r.content for r in results], top_k=k)
+            ranked = self._reranker.rerank(
+                rerank_query, [r.content for r in results], top_k=k
+            )
             reranked: list[SearchResult] = []
             for idx, score in ranked:
                 r = results[idx]

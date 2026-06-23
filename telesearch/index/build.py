@@ -35,6 +35,7 @@ def _message_to_chunks(
     doc_chunk_chars: int = 1200,
     doc_chunk_overlap: int = 150,
     doc_max_chars: int = 400_000,
+    reply_lookup: Optional[dict[int, Message]] = None,
 ) -> list[Chunk]:
     """Turn one message into one or more searchable chunks."""
     chunks: list[Chunk] = []
@@ -60,7 +61,17 @@ def _message_to_chunks(
         )
 
     if msg.text.strip():
-        chunks.append(base("text", msg.text, None))
+        # If this message is a reply, prepend a short snippet of the message it
+        # replies to. A bare "yes, book it" is meaningless on its own; with the
+        # quoted parent it becomes searchable and answerable in context.
+        content = msg.text
+        if reply_lookup and msg.reply_to:
+            parent = reply_lookup.get(msg.reply_to)
+            parent_text = (parent.text or "").strip() if parent else ""
+            if parent_text:
+                snippet = parent_text[:200]
+                content = f"(replying to {parent.sender}: {snippet})\n{msg.text}"
+        chunks.append(base("text", content, None))
 
     resolved = _resolve_media(export_root, msg.media_path)
 
@@ -159,6 +170,109 @@ def _message_to_chunks(
 def _iter_blocks(items: list, size: int):
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+_MEDIA_MARKERS = {
+    "photo": "[photo]",
+    "video": "[video]",
+    "voice": "[voice message]",
+    "sticker": "",
+}
+
+
+def _conversation_line(msg: Message) -> Optional[str]:
+    """Render a message as one ``[msg id] Sender: text`` line for a window.
+
+    Media-only messages contribute a short marker (``[photo]`` etc.) so the flow
+    of the conversation is preserved even where there is no typed text. The
+    per-line message id lets the answer model cite a specific message.
+    """
+    text = (msg.text or "").strip()
+    if msg.media_type == "file":
+        marker = f"[file: {msg.file_name}]" if msg.file_name else "[file]"
+    else:
+        marker = _MEDIA_MARKERS.get(msg.media_type or "", "")
+    body = " ".join(p for p in (text, marker) if p).strip()
+    if not body:
+        return None
+    return f"[msg {msg.id}] {msg.sender}: {body}"
+
+
+def _build_conversation_chunks(
+    messages: list[Message],
+    *,
+    window_size: int,
+    stride: int,
+    max_gap: int,
+) -> list[Chunk]:
+    """Group consecutive messages into overlapping conversation-window chunks.
+
+    Messages are ordered by time and split into sessions wherever the gap
+    between two messages exceeds ``max_gap`` (so unrelated conversations are not
+    glued together). Each session is then covered by sliding windows of up to
+    ``window_size`` messages advancing by ``stride`` (so windows overlap),
+    giving retrieval the surrounding context that a single short message lacks.
+    """
+    if window_size <= 1:
+        return []
+    stride = max(1, stride)
+    ordered = sorted(messages, key=lambda m: (m.timestamp, m.id))
+
+    sessions: list[list[Message]] = []
+    current: list[Message] = []
+    prev_ts: Optional[int] = None
+    for m in ordered:
+        if (
+            prev_ts is not None
+            and max_gap
+            and (m.timestamp - prev_ts) > max_gap
+        ):
+            if current:
+                sessions.append(current)
+            current = []
+        current.append(m)
+        prev_ts = m.timestamp
+    if current:
+        sessions.append(current)
+
+    chunks: list[Chunk] = []
+    seen_cids: set[str] = set()
+    for session in sessions:
+        n = len(session)
+        for start in range(0, n, stride):
+            window = session[start : start + window_size]
+            if len(window) < 2:
+                continue  # a lone message is already covered by its own chunk
+            lines = [ln for ln in (_conversation_line(m) for m in window) if ln]
+            if len(lines) < 2:
+                continue
+            first = window[0]
+            cid = f"{first.id}:conversation"
+            if cid in seen_cids:
+                continue
+            seen_cids.add(cid)
+            ids = [m.id for m in window]
+            chunks.append(
+                Chunk(
+                    chunk_id=cid,
+                    message_id=first.id,
+                    chat=first.chat,
+                    sender="conversation",
+                    timestamp=first.timestamp,
+                    date_str=first.date_str,
+                    modality="conversation",
+                    content="\n".join(lines),
+                    media_path=None,
+                    extra={
+                        "message_ids": ids,
+                        "start_id": ids[0],
+                        "end_id": ids[-1],
+                    },
+                )
+            )
+            if start + window_size >= n:
+                break  # last window reached the end of the session
+    return chunks
 
 
 def _describe(msg: Message) -> str:
@@ -275,6 +389,7 @@ def build_index(
     do_audio: bool = True,
     do_ocr: bool = True,
     do_documents: bool = True,
+    do_conversation_windows: bool = True,
     resume: bool = True,
     rebuild: bool = False,
     workers: int | None = None,
@@ -316,13 +431,18 @@ def build_index(
         f"batch_size={embed_batch} | max_seq_length={embedder.max_seq_length}"
     )
 
+    # Materialize the full set first so replies can be linked to their parent
+    # (the parent may already be indexed and thus filtered out below).
+    all_messages = list(messages)
+    reply_lookup = {m.id: m for m in all_messages}
+
     if rebuild:
         store.drop()
         seen: set[int] = set()
     else:
         seen = store.existing_message_ids() if resume else set()
 
-    messages = [m for m in messages if m.id not in seen]
+    messages = [m for m in all_messages if m.id not in seen]
     if seen:
         tqdm.write(f"[resume] skipping {len(seen)} already-indexed messages")
 
@@ -344,6 +464,7 @@ def build_index(
                 doc_chunk_chars=settings.doc_chunk_chars,
                 doc_chunk_overlap=settings.doc_chunk_overlap,
                 doc_max_chars=settings.doc_max_chars,
+                reply_lookup=reply_lookup,
             )
         finally:
             inflight.pop(msg.id, None)
@@ -375,6 +496,26 @@ def build_index(
     finally:
         watchdog.cancel()
         pool.shutdown(wait=False, cancel_futures=True)
+
+    if do_conversation_windows and settings.enable_conversation_windows:
+        conv_chunks = _build_conversation_chunks(
+            messages,
+            window_size=settings.conversation_window_size,
+            stride=settings.conversation_window_stride,
+            max_gap=settings.conversation_window_max_gap,
+        )
+        if conv_chunks:
+            tqdm.write(
+                f"[windows] indexing {len(conv_chunks)} conversation-window chunks "
+                f"(size={settings.conversation_window_size}, "
+                f"stride={settings.conversation_window_stride})"
+            )
+            for block in _iter_blocks(conv_chunks, embed_batch):
+                vectors = embedder.encode(
+                    [c.content for c in block], batch_size=embed_batch
+                )
+                store.add([c.to_row() for c in block], vectors)
+                total += len(block)
 
     store.build_fts()
     return total

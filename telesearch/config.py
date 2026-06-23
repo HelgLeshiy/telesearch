@@ -41,6 +41,32 @@ class Settings(BaseSettings):
     use_reranker: bool = True
     rerank_candidates: int = 50
 
+    # Conversation-window chunks. Telegram messages are short and fragmented, so
+    # embedding each one in isolation loses the surrounding context and rarely
+    # matches a full natural-language question. In addition to per-message
+    # chunks we also index overlapping *windows* of consecutive messages, which
+    # gives retrieval real conversational context and dramatically improves
+    # recall for "what did we decide about X" style questions.
+    enable_conversation_windows: bool = True
+    conversation_window_size: int = 6  # messages grouped per window
+    conversation_window_stride: int = 3  # advance between windows (overlap = size - stride)
+    # Don't span a single window across a silence larger than this (seconds);
+    # a long gap usually means a new, unrelated conversation.
+    conversation_window_max_gap: int = 3600
+
+    # Retrieval-time context expansion for `ask`: after retrieving the best
+    # matches, also pull the messages immediately before/after each hit (same
+    # chat, neighbouring message ids) so the answer model sees the conversation
+    # around a match, not just the single matched line. 0 disables.
+    context_neighbors: int = 4
+
+    # HyDE (Hypothetical Document Embeddings): before retrieving, let the chat
+    # model draft a short hypothetical answer and search with it too. This
+    # bridges the vocabulary gap between a *question* and the casual *statement*
+    # that actually answers it, so `ask` still finds the answer even when the
+    # question shares almost no words with the relevant messages.
+    enable_hyde: bool = True
+
     # OCR: extract verbatim on-image text as its own searchable field.
     enable_ocr: bool = True
 

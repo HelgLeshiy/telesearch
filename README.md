@@ -70,6 +70,15 @@ embeddings + keyword matching + a reranker. Generative models are only used to
 
 Why this design:
 
+- **Conversation context, not isolated messages.** Chat messages are short and
+  fragmented ("ok", "the sushi place", "yes book it"), so embedding each one
+  alone loses meaning and rarely matches a full question. Alongside per-message
+  chunks, telesearch indexes overlapping **windows of consecutive messages**, so
+  retrieval sees the surrounding conversation. Replies are also stitched to a
+  snippet of the message they answer. At answer time, `ask` additionally pulls
+  in the messages just **before/after** each hit and uses **HyDE** (drafting a
+  hypothetical answer to retrieve with) so it still finds things even when your
+  question shares almost no words with the message that answers it.
 - **Photos/videos become first-class search targets.** A vision-language model
   writes a detailed caption ("two people at a beach at sunset holding a
   cocktail menu") which is then embedded just like a typed message. So "that
@@ -343,6 +352,13 @@ telesearch/
 - **First indexing run is the expensive part** (captioning + transcription, and
   OCR adds a second VLM pass per photo). After that, search/ask are fast. Every
   media step (`--no-images/--no-videos/--no-audio/--no-ocr`) is toggleable.
+- **Tuning conversation context.** Window size/stride
+  (`TELESEARCH_CONVERSATION_WINDOW_SIZE` / `_STRIDE`) and the answer-time
+  neighbour count (`TELESEARCH_CONTEXT_NEIGHBORS`) trade breadth of context for
+  index size / prompt length. HyDE (`TELESEARCH_ENABLE_HYDE`) adds one extra LLM
+  call per `ask` but markedly improves recall on conversational questions; turn
+  it off (`--no-hyde`) for the fastest answers. Conversation-window chunking is
+  applied at index time, so **re-index** (ideally `--rebuild`) after enabling it.
 - The pipeline makes images searchable via **text captions** by default. For
   literal "find visually similar images" you can add CLIP/SigLIP embeddings
   (`TELESEARCH_IMAGE_EMBED_MODEL` is wired in config for that extension).
