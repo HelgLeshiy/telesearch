@@ -100,6 +100,50 @@ class VectorStore:
             # FTS index may not exist yet.
             return []
 
+    def fetch_around(
+        self,
+        chat: str,
+        message_ids: list[int],
+        before: int,
+        after: int,
+        modalities: tuple[str, ...] | None = None,
+        limit: int = 2000,
+    ) -> list[dict]:
+        """Return chunks in the message-id neighbourhood of ``message_ids``.
+
+        Used for retrieval-time *context expansion*: given the message ids of
+        the best matches, pull the surrounding messages (same chat) so an answer
+        can be grounded in the conversation around a hit, not just the single
+        matched line. Telegram message ids are (near-)sequential in time, so an
+        id range is a good proxy for "the messages just before/after this one".
+        Results are returned in chronological order with the vector dropped.
+        """
+        if not message_ids or (before <= 0 and after <= 0):
+            return []
+        safe_chat = chat.replace("'", "''")
+        ranges = " OR ".join(
+            f"(message_id >= {mid - before} AND message_id <= {mid + after})"
+            for mid in message_ids
+        )
+        where = f"chat = '{safe_chat}' AND ({ranges})"
+        if modalities:
+            mods = ", ".join(f"'{m}'" for m in modalities)
+            where += f" AND modality IN ({mods})"
+        try:
+            rows = self.table.search().where(where).limit(limit).to_list()
+        except Exception:
+            return []
+        for r in rows:
+            r.pop("vector", None)
+        rows.sort(
+            key=lambda r: (
+                r.get("timestamp", 0),
+                r.get("message_id", 0),
+                r.get("chunk_id", ""),
+            )
+        )
+        return rows
+
     def hybrid_search(
         self,
         query_text: str,

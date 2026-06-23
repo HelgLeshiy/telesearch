@@ -30,6 +30,11 @@ def index(
     audio: bool = typer.Option(True, help="Transcribe voice messages."),
     ocr: bool = typer.Option(True, help="Extract verbatim on-image text (OCR) as a separate chunk."),
     documents: bool = typer.Option(True, help="Extract & index text from file attachments (PDF, Office, text/code)."),
+    conversation_windows: bool = typer.Option(
+        True,
+        "--conversation-windows/--no-conversation-windows",
+        help="Also index overlapping windows of consecutive messages for conversational context.",
+    ),
     rebuild: bool = typer.Option(False, help="Drop the existing index and start over."),
     resume: bool = typer.Option(True, help="Skip messages that are already indexed."),
     workers: Optional[int] = typer.Option(None, help="Concurrent media requests (default: config)."),
@@ -54,6 +59,7 @@ def index(
         do_audio=audio,
         do_ocr=ocr,
         do_documents=documents,
+        do_conversation_windows=conversation_windows,
         rebuild=rebuild,
         resume=resume,
         workers=workers,
@@ -68,7 +74,8 @@ def search(
     query: str = typer.Argument(..., help="Search query."),
     k: int = typer.Option(10, help="Number of results."),
     modality: Optional[str] = typer.Option(
-        None, help="Filter by type: text, image, video, audio, ocr, document."
+        None,
+        help="Filter by type: text, conversation, image, video, audio, ocr, document.",
     ),
     rerank: Optional[bool] = typer.Option(
         None, "--rerank/--no-rerank", help="Cross-encoder rerank (default: config)."
@@ -102,12 +109,23 @@ def search(
 def ask(
     question: str = typer.Argument(..., help="Natural-language question."),
     k: int = typer.Option(12, help="Number of context chunks to retrieve."),
+    hyde: Optional[bool] = typer.Option(
+        None,
+        "--hyde/--no-hyde",
+        help="Draft a hypothetical answer to improve retrieval recall (default: config).",
+    ),
+    neighbors: Optional[int] = typer.Option(
+        None,
+        help="Messages of surrounding context to include on each side of a hit (default: config).",
+    ),
 ):
     """Ask a question and get an answer grounded in the conversation (RAG)."""
     from .search import answer_question
 
     settings = get_settings()
-    answer, sources = answer_question(question, settings, k=k)
+    answer, sources = answer_question(
+        question, settings, k=k, use_hyde=hyde, neighbors=neighbors
+    )
 
     console.print(Panel(answer, title="Answer", border_style="green"))
     if sources:
@@ -134,6 +152,13 @@ def info():
     table.add_row("use_reranker", str(settings.use_reranker))
     table.add_row("enable_ocr", str(settings.enable_ocr))
     table.add_row("enable_documents", str(settings.enable_documents))
+    table.add_row(
+        "conversation_windows",
+        f"{settings.enable_conversation_windows} "
+        f"(size={settings.conversation_window_size}, stride={settings.conversation_window_stride})",
+    )
+    table.add_row("context_neighbors (ask)", str(settings.context_neighbors))
+    table.add_row("enable_hyde (ask)", str(settings.enable_hyde))
     table.add_row("vlm_model (captioning)", settings.vlm_model)
     table.add_row("chat_model (ask/RAG)", settings.chat_model)
     table.add_row("whisper_model", settings.whisper_model)
