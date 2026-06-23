@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import faulthandler
+import sys
+import threading
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -158,7 +161,66 @@ def _iter_blocks(items: list, size: int):
         yield items[i : i + size]
 
 
-def _process_block(block, process, pool, bar, item_timeout: float):
+def _describe(msg: Message) -> str:
+    """Short human-readable description of what a message will process."""
+    media_type = getattr(msg, "media_type", None)
+    media_path = getattr(msg, "media_path", None)
+    file_name = getattr(msg, "file_name", None)
+    bits = []
+    if media_type:
+        bits.append(media_type)
+    if media_path:
+        bits.append(media_path)
+    if file_name and file_name != media_path:
+        bits.append(file_name)
+    return ", ".join(bits) if bits else "text-only"
+
+
+class _HangWatchdog:
+    """Dump in-flight messages + all thread stacks if progress stalls.
+
+    The build runs media decoding/captioning across a thread pool. A single
+    item stuck in an uninterruptible C call (e.g. a corrupt image in PIL) can't
+    be force-killed, so when nothing completes for ``timeout`` seconds we print
+    exactly what is in flight and where every thread is parked — turning an
+    opaque freeze into an actionable report.
+    """
+
+    def __init__(self, timeout: float, inflight: dict[int, str]):
+        self.timeout = timeout
+        self.inflight = inflight
+        self._timer: Optional[threading.Timer] = None
+        self._lock = threading.Lock()
+
+    def _fire(self) -> None:
+        tqdm.write(
+            f"\n[hang] no message completed for {self.timeout:.0f}s. "
+            f"Likely one item is stuck. Currently in flight:"
+        )
+        for mid, desc in list(self.inflight.items()):
+            tqdm.write(f"[hang]   msg {mid}: {desc}")
+        tqdm.write("[hang] thread stacks follow (look for the worker thread):")
+        faulthandler.dump_traceback(file=sys.stderr)
+        self.reset()  # keep reporting while still stuck
+
+    def reset(self) -> None:
+        if not self.timeout or self.timeout <= 0:
+            return
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(self.timeout, self._fire)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def cancel(self) -> None:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+
+def _process_block(block, process, pool, bar, item_timeout: float, watchdog=None):
     """Run ``process`` over a block, bounding each message by ``item_timeout``.
 
     A message that hangs (e.g. a corrupt image whose decode never returns, or a
@@ -170,6 +232,11 @@ def _process_block(block, process, pool, bar, item_timeout: float):
     timeout = item_timeout if item_timeout and item_timeout > 0 else None
     results: list = []
 
+    def _advance() -> None:
+        bar.update(1)
+        if watchdog is not None:
+            watchdog.reset()
+
     if pool is None:
         for msg in block:
             try:
@@ -177,7 +244,7 @@ def _process_block(block, process, pool, bar, item_timeout: float):
             except Exception as exc:  # pragma: no cover - robustness for big exports
                 tqdm.write(f"[warn] msg {msg.id} failed: {exc}")
                 results.append([])
-            bar.update(1)
+            _advance()
         return results
 
     futures = [(msg, pool.submit(process, msg)) for msg in block]
@@ -186,15 +253,15 @@ def _process_block(block, process, pool, bar, item_timeout: float):
             results.append(fut.result(timeout=timeout))
         except FuturesTimeout:
             tqdm.write(
-                f"[warn] msg {msg.id} timed out after {timeout:.0f}s; skipping. "
-                f"(stuck media/document — raise TELESEARCH_MEDIA_ITEM_TIMEOUT if legit)"
+                f"[warn] msg {msg.id} timed out after {timeout:.0f}s ({_describe(msg)}); "
+                f"skipping. (raise TELESEARCH_MEDIA_ITEM_TIMEOUT if this is legit media)"
             )
             fut.cancel()
             results.append([])
         except Exception as exc:  # pragma: no cover - robustness for big exports
             tqdm.write(f"[warn] msg {msg.id} failed: {exc}")
             results.append([])
-        bar.update(1)
+        _advance()
     return results
 
 
@@ -259,19 +326,27 @@ def build_index(
     if seen:
         tqdm.write(f"[resume] skipping {len(seen)} already-indexed messages")
 
+    # Track what each worker is currently chewing on so the hang watchdog can
+    # name the exact message/file if the build stalls.
+    inflight: dict[int, str] = {}
+
     def process(msg: Message) -> list[Chunk]:
-        return _message_to_chunks(
-            msg,
-            export_root,
-            captioner=captioner if (do_images or do_videos) else None,
-            transcriber=transcriber if (do_audio or do_videos) else None,
-            num_frames=settings.video_frames,
-            do_ocr=do_ocr and do_images,
-            do_documents=do_documents,
-            doc_chunk_chars=settings.doc_chunk_chars,
-            doc_chunk_overlap=settings.doc_chunk_overlap,
-            doc_max_chars=settings.doc_max_chars,
-        )
+        inflight[msg.id] = _describe(msg)
+        try:
+            return _message_to_chunks(
+                msg,
+                export_root,
+                captioner=captioner if (do_images or do_videos) else None,
+                transcriber=transcriber if (do_audio or do_videos) else None,
+                num_frames=settings.video_frames,
+                do_ocr=do_ocr and do_images,
+                do_documents=do_documents,
+                doc_chunk_chars=settings.doc_chunk_chars,
+                doc_chunk_overlap=settings.doc_chunk_overlap,
+                doc_max_chars=settings.doc_max_chars,
+            )
+        finally:
+            inflight.pop(msg.id, None)
 
     total = 0
     # Block size balances throughput (concurrency window) with how often we
@@ -280,12 +355,14 @@ def build_index(
     # Always use a pool so the per-message timeout guard applies even at
     # workers=1 (a single hung file would otherwise stall the whole build).
     pool = ThreadPoolExecutor(max_workers=max(workers, 1))
+    watchdog = _HangWatchdog(settings.hang_traceback_seconds, inflight)
 
     try:
         with tqdm(total=len(messages), desc="indexing", unit="msg") as bar:
+            watchdog.reset()
             for block in _iter_blocks(messages, block_size):
                 results = _process_block(
-                    block, process, pool, bar, settings.media_item_timeout
+                    block, process, pool, bar, settings.media_item_timeout, watchdog
                 )
 
                 chunks = [c for group in results for c in group]
@@ -296,6 +373,7 @@ def build_index(
                     store.add([c.to_row() for c in chunks], vectors)
                     total += len(chunks)
     finally:
+        watchdog.cancel()
         pool.shutdown(wait=False, cancel_futures=True)
 
     store.build_fts()

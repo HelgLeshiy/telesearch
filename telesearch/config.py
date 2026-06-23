@@ -72,7 +72,11 @@ class Settings(BaseSettings):
     # indexing. A message that exceeds it (e.g. a corrupt image whose decode
     # hangs, or a pathologically slow document/transcription) is logged and
     # skipped instead of stalling the entire run. 0 disables the guard.
-    media_item_timeout: float = 300.0
+    media_item_timeout: float = 180.0
+    # If no message completes for this many seconds, dump every thread's stack
+    # to stderr so a hang is immediately diagnosable (which file / which call).
+    # 0 disables the watchdog.
+    hang_traceback_seconds: float = 60.0
     # Largest image (in megapixels) we will decode for captioning/OCR. Bigger
     # images are downscaled by the JPEG decoder before full decode; this also
     # guards against decompression-bomb images that can hang or exhaust memory.
