@@ -269,7 +269,12 @@ thousands of VLM/Whisper calls. The build is designed for that:
   capacity.
 - **Robust.** Media that wasn't downloaded (Telegram's `(File not included…)`
   placeholder), stickers, and unreadable/binary files are skipped without
-  failing the run.
+  failing the run. Image decoding and document parsing run in **killable
+  worker processes** with a per-item timeout (`TELESEARCH_MEDIA_ITEM_TIMEOUT`),
+  so a single corrupt/huge file that hangs PIL or a PDF parser is terminated
+  and skipped instead of freezing the whole build. If a run still stalls, a
+  watchdog (`TELESEARCH_HANG_TRACEBACK_SECONDS`) prints the in-flight message
+  ids and every thread's stack so the culprit is obvious.
 - **MIME-aware.** Images/videos that were sent as plain *files* (so they live in
   the `files/` folder) are still captioned/transcribed by their MIME type, not
   treated as documents.

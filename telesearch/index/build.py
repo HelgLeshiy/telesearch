@@ -29,6 +29,7 @@ def _message_to_chunks(
     *,
     captioner,
     transcriber,
+    decoder=None,
     num_frames: int,
     do_ocr: bool = False,
     do_documents: bool = False,
@@ -65,27 +66,40 @@ def _message_to_chunks(
     resolved = _resolve_media(export_root, msg.media_path)
 
     if msg.media_type == "photo" and resolved and captioner is not None:
+        # Decode the image once in a killable subprocess; a corrupt/huge file
+        # that hangs PIL is terminated rather than wedging the worker forever.
+        # The decoded data URL is reused for both captioning and OCR.
+        data_url = None
         try:
-            caption = captioner.caption_image(resolved)
-            if caption:
-                content = caption
-                if msg.text.strip():
-                    content = f"{caption}\nCaption: {msg.text.strip()}"
-                chunks.append(base("image", content, msg.media_path, {"caption": caption}))
+            if decoder is not None:
+                data_url = decoder.image_data_url(resolved)
+            else:
+                data_url = captioner._data_url(resolved)
         except Exception as exc:  # pragma: no cover - robustness for big exports
-            tqdm.write(f"[warn] image caption failed for msg {msg.id}: {exc}")
+            tqdm.write(f"[warn] image decode failed/timed out for msg {msg.id} ({msg.media_path}): {exc}")
 
-        if do_ocr:
+        if data_url is not None:
             try:
-                ocr_text = captioner.ocr_image(resolved)
-                if ocr_text:
-                    # Separate chunk so on-image text is retrievable on its own
-                    # (great for screenshots, receipts, documents, memes).
-                    chunks.append(
-                        base("ocr", ocr_text, msg.media_path, {"ocr_text": ocr_text})
-                    )
-            except Exception as exc:  # pragma: no cover
-                tqdm.write(f"[warn] image OCR failed for msg {msg.id}: {exc}")
+                caption = captioner.caption_data_url(data_url)
+                if caption:
+                    content = caption
+                    if msg.text.strip():
+                        content = f"{caption}\nCaption: {msg.text.strip()}"
+                    chunks.append(base("image", content, msg.media_path, {"caption": caption}))
+            except Exception as exc:  # pragma: no cover - robustness for big exports
+                tqdm.write(f"[warn] image caption failed for msg {msg.id}: {exc}")
+
+            if do_ocr:
+                try:
+                    ocr_text = captioner.ocr_data_url(data_url)
+                    if ocr_text:
+                        # Separate chunk so on-image text is retrievable on its
+                        # own (great for screenshots, receipts, memes).
+                        chunks.append(
+                            base("ocr", ocr_text, msg.media_path, {"ocr_text": ocr_text})
+                        )
+                except Exception as exc:  # pragma: no cover
+                    tqdm.write(f"[warn] image OCR failed for msg {msg.id}: {exc}")
 
     if msg.media_type == "video" and resolved:
         parts: list[str] = []
@@ -113,14 +127,21 @@ def _message_to_chunks(
             chunks.append(base("video", "\n".join(parts), msg.media_path, extra))
 
     if msg.media_type == "file" and resolved and do_documents:
-        from ..media.documents import extract_document_text, split_text
+        from ..media.documents import split_text
 
         try:
-            text = extract_document_text(
-                resolved, msg.mime_type, msg.file_name, max_chars=doc_max_chars
-            )
+            if decoder is not None:
+                text = decoder.document_text(
+                    resolved, msg.mime_type, msg.file_name, doc_max_chars
+                )
+            else:
+                from ..media.documents import extract_document_text
+
+                text = extract_document_text(
+                    resolved, msg.mime_type, msg.file_name, max_chars=doc_max_chars
+                )
         except Exception as exc:  # pragma: no cover - robustness for big exports
-            tqdm.write(f"[warn] document extract failed for msg {msg.id}: {exc}")
+            tqdm.write(f"[warn] document extract failed/timed out for msg {msg.id} ({msg.media_path}): {exc}")
             text = ""
         if text:
             label = msg.file_name or Path(msg.media_path).name
@@ -298,6 +319,7 @@ def build_index(
 
     captioner = None
     transcriber = None
+    decoder = None
     if do_images or do_videos:
         from ..media.captioner import VLMCaptioner
 
@@ -306,6 +328,19 @@ def build_index(
         from ..media.asr import Transcriber
 
         transcriber = Transcriber(settings)
+    if do_images or do_documents:
+        from ..media.decode_pool import DecodePool
+
+        decoder = DecodePool(
+            max_workers=workers,
+            timeout=settings.media_item_timeout,
+            max_image_megapixels=settings.max_image_megapixels,
+        )
+        if not decoder.isolated:
+            tqdm.write(
+                "[warn] pebble not available; media decode runs in-thread "
+                "(a corrupt file can still stall the run). pip install pebble."
+            )
 
     embedder = TextEmbedder(settings)
     store = VectorStore(settings.db_path, embedder.dim)
@@ -338,6 +373,7 @@ def build_index(
                 export_root,
                 captioner=captioner if (do_images or do_videos) else None,
                 transcriber=transcriber if (do_audio or do_videos) else None,
+                decoder=decoder,
                 num_frames=settings.video_frames,
                 do_ocr=do_ocr and do_images,
                 do_documents=do_documents,
@@ -375,6 +411,8 @@ def build_index(
     finally:
         watchdog.cancel()
         pool.shutdown(wait=False, cancel_futures=True)
+        if decoder is not None:
+            decoder.close()
 
     store.build_fts()
     return total
