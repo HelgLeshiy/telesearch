@@ -139,3 +139,44 @@ def test_path_to_data_url_downscales_large_image(tmp_path):
 
     decoded = Image.open(io.BytesIO(base64.b64decode(raw)))
     assert max(decoded.size) <= 1024
+
+
+def test_decode_pool_decodes_image(tmp_path):
+    from telesearch.media.decode_pool import DecodePool
+
+    f = tmp_path / "p.jpg"
+    Image.new("RGB", (50, 50), (1, 2, 3)).save(f, format="JPEG")
+    pool = DecodePool(max_workers=1, timeout=30, max_image_megapixels=50)
+    try:
+        url = pool.image_data_url(f)
+        assert url.startswith("data:image/jpeg;base64,")
+    finally:
+        pool.close()
+
+
+def test_decode_pool_kills_hung_task_and_recovers():
+    """A task exceeding the timeout is killed; the pool keeps working after."""
+    import telesearch.media.decode_pool as dp
+
+    pool = dp.DecodePool(max_workers=1, timeout=0.5, max_image_megapixels=50)
+    if not pool.isolated:
+        pool.close()
+        return  # pebble unavailable -> isolation not active; nothing to assert
+
+    # Monkeypatch the run target with a top-level hanging function via the pool
+    # internals: schedule a sleep that exceeds the timeout.
+    import time as _time
+    from concurrent.futures import TimeoutError as FuturesTimeout
+
+    fut = pool._pool.schedule(_time.sleep, args=[10], timeout=0.5)
+    try:
+        try:
+            fut.result()
+            raise AssertionError("expected timeout")
+        except FuturesTimeout:
+            pass
+        # Pool still usable after killing the hung worker.
+        fut2 = pool._pool.schedule(_time.sleep, args=[0], timeout=5)
+        fut2.result()
+    finally:
+        pool.close()
