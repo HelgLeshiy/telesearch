@@ -66,15 +66,24 @@ def _table_names(db) -> list[str]:
 
 
 class VectorStore:
-    def __init__(self, db_path: str | Path, dim: int):
+    def __init__(self, db_path: str | Path, dim: int | None = None, *, create: bool = True):
+        """Open (and by default create) the chunks table at ``db_path``.
+
+        ``create=False`` opens an existing table without creating a new one;
+        ``self.table`` is then ``None`` if the index doesn't exist yet (used for
+        maintenance like deletion that must never materialize a wrong-``dim``
+        table).
+        """
         self.db_path = Path(db_path)
         self.db_path.mkdir(parents=True, exist_ok=True)
         self.dim = dim
         self.db = lancedb.connect(str(self.db_path))
         if TABLE_NAME in _table_names(self.db):
             self.table = self.db.open_table(TABLE_NAME)
-        else:
+        elif create and dim is not None:
             self.table = self.db.create_table(TABLE_NAME, schema=_schema(dim))
+        else:
+            self.table = None
 
     def _coerce_rows(self, rows: list[dict[str, Any]], vectors: np.ndarray) -> list[dict]:
         """Align rows to the table's actual schema before inserting.
@@ -166,6 +175,15 @@ class VectorStore:
             return search.where(where, prefilter=True)
         except TypeError:  # pragma: no cover - older LanceDB without prefilter kw
             return search.where(where)
+
+    def delete_collection(self, collection_id: str) -> int:
+        """Delete every chunk of a collection; return rows removed (0 if no table)."""
+        if self.table is None:
+            return 0
+        before = self.count()
+        safe = collection_id.replace("'", "''")
+        self.table.delete(f"collection_id = '{safe}'")
+        return before - self.count()
 
     def _vector_search(self, query_vec: np.ndarray, k: int, where: str | None = None) -> list[dict]:
         search = self.table.search(query_vec.astype(np.float32))
