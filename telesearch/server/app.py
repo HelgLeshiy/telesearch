@@ -12,7 +12,16 @@ from fastapi.staticfiles import StaticFiles
 from .config import ServerSettings, get_server_settings
 from .db import get_session_factory, init_db
 from .queue import Worker
-from .routers import auth, jobs, search, sources, workspaces
+from .routers import (
+    auth,
+    global_search,
+    guides,
+    jobs,
+    presets,
+    search,
+    sources,
+    workspaces,
+)
 
 log = logging.getLogger("telesearch.server")
 
@@ -64,6 +73,9 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     app.include_router(sources.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
     app.include_router(search.router, prefix="/api")
+    app.include_router(global_search.router, prefix="/api")
+    app.include_router(presets.router, prefix="/api")
+    app.include_router(guides.router, prefix="/api")
 
     if _STATIC_DIR.exists():
         app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")

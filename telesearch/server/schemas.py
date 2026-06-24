@@ -77,6 +77,11 @@ class SearchRequest(BaseModel):
     rerank: Optional[bool] = None
 
 
+class GlobalSearchRequest(SearchRequest):
+    # Limit the combined search to these workspaces (default: all accessible).
+    workspace_ids: Optional[list[str]] = None
+
+
 class SearchHit(BaseModel):
     chunk_id: str
     message_id: int
@@ -92,3 +97,15 @@ class SearchHit(BaseModel):
 class ShareCreate(BaseModel):
     user_email: str
     role: str = "viewer"
+
+
+class PresetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    params: dict = Field(default_factory=dict)
+
+
+class PresetOut(BaseModel):
+    id: str
+    name: str
+    params: dict
+    created_at: datetime

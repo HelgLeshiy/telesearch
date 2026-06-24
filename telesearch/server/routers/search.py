@@ -24,7 +24,8 @@ _shared_embedder = None
 _shared_reranker = None
 
 
-def _get_retriever(settings: Settings, db_path: str) -> Retriever:
+def get_shared_models(settings: Settings):
+    """Return the process-wide shared (embedder, reranker), loading once."""
     global _shared_embedder, _shared_reranker
     with _lock:
         if _shared_embedder is None:
@@ -33,12 +34,12 @@ def _get_retriever(settings: Settings, db_path: str) -> Retriever:
 
             _shared_embedder = TextEmbedder(settings)
             _shared_reranker = Reranker(settings) if settings.use_reranker else None
-    return Retriever(
-        settings,
-        db_path=db_path,
-        embedder=_shared_embedder,
-        reranker=_shared_reranker,
-    )
+    return _shared_embedder, _shared_reranker
+
+
+def _get_retriever(settings: Settings, db_path: str) -> Retriever:
+    embedder, reranker = get_shared_models(settings)
+    return Retriever(settings, db_path=db_path, embedder=embedder, reranker=reranker)
 
 
 def _scoped_service(scope: AccessScope, settings: Settings) -> SearchService:
