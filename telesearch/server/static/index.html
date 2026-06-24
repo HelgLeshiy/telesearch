@@ -12,6 +12,7 @@
     <div id="user-bar" class="hidden">
       <span id="user-email"></span>
       <select id="workspace-select"></select>
+      <button id="delete-ws" class="danger" title="Delete this workspace and all its data">Delete WS</button>
       <button id="logout">Log out</button>
     </div>
   </header>
@@ -34,6 +35,16 @@
 
     <!-- App -->
     <div id="app" class="hidden">
+      <section class="card">
+        <div class="graph-head">
+          <h2>Knowledge graph</h2>
+          <button id="graph-refresh" type="button">Rebuild graph</button>
+        </div>
+        <p id="graph-status" class="muted">Topics cluster your knowledge; bigger nodes hold more.</p>
+        <canvas id="graph-canvas" width="820" height="420"></canvas>
+        <div id="topic-panel" class="hidden"></div>
+      </section>
+
       <section class="card">
         <h2>Upload a source</h2>
         <form id="upload-form">
