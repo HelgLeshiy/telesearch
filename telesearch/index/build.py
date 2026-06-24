@@ -31,6 +31,9 @@ def _message_to_chunks(
     transcriber,
     decoder=None,
     num_frames: int,
+    do_images: bool = True,
+    do_videos: bool = True,
+    do_audio: bool = True,
     do_ocr: bool = False,
     do_documents: bool = False,
     doc_chunk_chars: int = 1200,
@@ -76,7 +79,7 @@ def _message_to_chunks(
 
     resolved = _resolve_media(export_root, msg.media_path)
 
-    if msg.media_type == "photo" and resolved and captioner is not None:
+    if msg.media_type == "photo" and resolved and do_images and captioner is not None:
         # Decode the image once in a killable subprocess; a corrupt/huge file
         # that hangs PIL is terminated rather than wedging the worker forever.
         # The decoded data URL is reused for both captioning and OCR.
@@ -112,21 +115,28 @@ def _message_to_chunks(
                 except Exception as exc:  # pragma: no cover
                     tqdm.write(f"[warn] image OCR failed for msg {msg.id}: {exc}")
 
-    if msg.media_type == "video" and resolved:
+    if msg.media_type == "video" and resolved and (do_videos or do_audio):
         parts: list[str] = []
         extra: dict = {}
-        if captioner is not None:
+        if do_videos and captioner is not None:
             try:
-                from ..media.video import extract_frames
+                # Frame extraction (PyAV) can hang on a malformed video, so run
+                # it in the killable subprocess pool when available; otherwise
+                # fall back to in-thread extraction.
+                if decoder is not None:
+                    frame_urls = decoder.video_frame_data_urls(resolved, num_frames)
+                    summary = captioner.caption_frame_data_urls(frame_urls)
+                else:
+                    from ..media.video import extract_frames
 
-                frames = extract_frames(resolved, num_frames)
-                summary = captioner.caption_frames(frames)
+                    frames = extract_frames(resolved, num_frames)
+                    summary = captioner.caption_frames(frames)
                 if summary:
                     parts.append(summary)
                     extra["summary"] = summary
             except Exception as exc:  # pragma: no cover
-                tqdm.write(f"[warn] video caption failed for msg {msg.id}: {exc}")
-        if transcriber is not None:
+                tqdm.write(f"[warn] video caption failed/timed out for msg {msg.id} ({msg.media_path}): {exc}")
+        if do_audio and transcriber is not None:
             try:
                 transcript = transcriber.transcribe(resolved)
                 if transcript:
@@ -175,7 +185,7 @@ def _message_to_chunks(
                     )
                 )
 
-    if msg.media_type == "voice" and resolved and transcriber is not None:
+    if msg.media_type == "voice" and resolved and do_audio and transcriber is not None:
         try:
             transcript = transcriber.transcribe(resolved)
             if transcript:
@@ -443,7 +453,7 @@ def build_index(
         from ..media.asr import Transcriber
 
         transcriber = Transcriber(settings)
-    if do_images or do_documents:
+    if do_images or do_videos or do_documents:
         from ..media.decode_pool import DecodePool
 
         decoder = DecodePool(
@@ -495,6 +505,9 @@ def build_index(
                 transcriber=transcriber if (do_audio or do_videos) else None,
                 decoder=decoder,
                 num_frames=settings.video_frames,
+                do_images=do_images,
+                do_videos=do_videos,
+                do_audio=do_audio,
                 do_ocr=do_ocr and do_images,
                 do_documents=do_documents,
                 doc_chunk_chars=settings.doc_chunk_chars,
