@@ -313,6 +313,13 @@ docker compose up -d ui
 Open http://localhost:8501. Thumbnails require `TELESEARCH_EXPORT_ROOT` to be
 set in `.env` (the export is mounted at `/export` inside the container).
 
+The UI mirrors the CLI: filter Search by any modality (text, conversation,
+image, video, audio, ocr, document), and an **Advanced** panel exposes the
+retrieval knobs — HyDE and surrounding-context size for Ask, cross-encoder
+rerank for Search. Image/video/voice results play inline and document results
+offer a download. Multi-line conversation windows and transcripts keep their
+line breaks.
+
 ### Development (without Docker)
 
 For local hacking on the Python package:
