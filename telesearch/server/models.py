@@ -94,6 +94,7 @@ class Source(Base):
     name: Mapped[str] = mapped_column(String(300), default="")
     status: Mapped[str] = mapped_column(String(32), default="uploaded")
     bytes: Mapped[int] = mapped_column(Integer, default=0)
+    content_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
     blob_key: Mapped[str] = mapped_column(String(512), default="")
     error: Mapped[str] = mapped_column(String(2000), default="")
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -114,6 +115,8 @@ class Job(Base):
         ForeignKey("sources.id"), nullable=True, index=True
     )
     type: Mapped[str] = mapped_column(String(64))
+    lane: Mapped[str] = mapped_column(String(16), default="cpu", index=True)  # cpu|gpu
+    priority: Mapped[int] = mapped_column(Integer, default=0)  # higher runs first
     state: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     message: Mapped[str] = mapped_column(String(500), default="")
