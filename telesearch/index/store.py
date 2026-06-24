@@ -82,6 +82,20 @@ class VectorStore:
             TABLE_NAME, schema=_schema(self.dim), mode="overwrite"
         )
 
+    def delete_modalities(self, modalities: list[str] | tuple[str, ...]) -> int:
+        """Delete all chunks of the given modalities; return rows removed.
+
+        Used by the text-only reindex to refresh just the text-derived chunks
+        (``text`` + ``conversation``) without touching the expensive media
+        chunks (captions, transcripts, OCR, documents).
+        """
+        if not modalities:
+            return 0
+        before = self.count()
+        mods = ", ".join(f"'{m}'" for m in modalities)
+        self.table.delete(f"modality IN ({mods})")
+        return before - self.count()
+
     def _vector_search(self, query_vec: np.ndarray, k: int) -> list[dict]:
         return (
             self.table.search(query_vec.astype(np.float32))

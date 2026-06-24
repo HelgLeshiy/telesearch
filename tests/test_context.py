@@ -171,6 +171,35 @@ def test_fetch_around_no_neighbors_disabled(tmp_path):
     assert store.fetch_around("c", [], before=2, after=2) == []
 
 
+def test_delete_modalities_removes_only_targeted(tmp_path):
+    dim = 8
+    store = VectorStore(tmp_path / "db", dim)
+    chunks = [
+        _chunk(1, "text"),
+        _chunk(1, "conversation"),
+        _chunk(2, "image"),
+        _chunk(3, "document"),
+    ]
+    rng = np.random.default_rng(2)
+    vecs = rng.standard_normal((len(chunks), dim)).astype("float32")
+    vecs /= np.linalg.norm(vecs, axis=1, keepdims=True)
+    store.add([c.to_row() for c in chunks], vecs)
+
+    removed = store.delete_modalities(["text", "conversation"])
+    assert removed == 2
+    remaining = collections_counter(store)
+    assert remaining == {"image": 1, "document": 1}
+    # No-op for an empty list.
+    assert store.delete_modalities([]) == 0
+
+
+def collections_counter(store):
+    import collections
+
+    mods = store.table.to_arrow().column("modality").to_pylist()
+    return dict(collections.Counter(mods))
+
+
 # --------------------------------------------------------------------------- #
 # RAG context expansion
 # --------------------------------------------------------------------------- #

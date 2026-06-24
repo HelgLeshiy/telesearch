@@ -259,6 +259,10 @@ docker compose run --rm telesearch ask "where did we say we'd meet on Saturday?"
 
 # Show config + index status
 docker compose run --rm telesearch info
+
+# Add conversation-window + reply context to an EXISTING index, cheaply
+# (refreshes only text/conversation chunks; no media re-processing, no vLLM)
+docker compose run --rm --no-deps telesearch reindex-text /export
 ```
 
 `--no-deps` skips starting the `vllm` service — use it for text-only indexing
@@ -362,8 +366,22 @@ telesearch/
   neighbour count (`TELESEARCH_CONTEXT_NEIGHBORS`) trade breadth of context for
   index size / prompt length. HyDE (`TELESEARCH_ENABLE_HYDE`) adds one extra LLM
   call per `ask` but markedly improves recall on conversational questions; turn
-  it off (`--no-hyde`) for the fastest answers. Conversation-window chunking is
-  applied at index time, so **re-index** (ideally `--rebuild`) after enabling it.
+  it off (`--no-hyde`) for the fastest answers.
+- **Adopting conversation windows on an existing index.** Window chunks and
+  reply stitching are built at index time. To add them to an index you built
+  before this feature existed, you have two options. A full `index --rebuild`
+  re-does everything (including re-captioning every photo/video — slow, needs
+  vLLM). If you only want the text-derived context, use **`reindex-text`**,
+  which refreshes just the `text` + `conversation` chunks and leaves the media
+  chunks alone — no VLM/Whisper, so it's fast and runs with `--no-deps`:
+
+```bash
+docker compose run --rm --no-deps telesearch reindex-text /export
+```
+
+  (A plain `index` re-run without `--rebuild` will *not* add windows to an
+  already-indexed export: resume skips every seen message, so nothing new is
+  produced. Use `reindex-text` or `--rebuild`.)
 - The pipeline makes images searchable via **text captions** by default. For
   literal "find visually similar images" you can add CLIP/SigLIP embeddings
   (`TELESEARCH_IMAGE_EMBED_MODEL` is wired in config for that extension).

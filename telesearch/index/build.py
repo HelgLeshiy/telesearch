@@ -570,3 +570,73 @@ def build_index(
 
     store.build_fts()
     return total
+
+
+def reindex_text(
+    messages: Iterable[Message],
+    export_root: str | Path,
+    settings: Settings,
+    *,
+    do_conversation_windows: bool = True,
+) -> int:
+    """Refresh only the *text-derived* chunks over an existing index.
+
+    Rebuilds ``text`` (with reply stitching) and ``conversation`` window chunks
+    from the export, leaving the expensive media chunks (image captions, video
+    summaries, voice transcripts, OCR, document text) untouched. This lets you
+    adopt conversation-window context on a large, already-indexed export
+    **without** re-running the VLM/Whisper over thousands of media files — so it
+    needs no vLLM server (run with ``--no-deps``). Returns the new chunk count.
+    """
+    export_root = Path(export_root)
+    all_messages = list(messages)
+    reply_lookup = {m.id: m for m in all_messages}
+
+    embedder = TextEmbedder(settings)
+    store = VectorStore(settings.db_path, embedder.dim)
+    embed_batch = settings.embed_batch_size
+
+    removed = store.delete_modalities(["text", "conversation"])
+    tqdm.write(f"[reindex-text] removed {removed} existing text/conversation chunks")
+
+    # Text-only pass: captioner/transcriber/documents disabled, so only the
+    # per-message text chunk (with reply context) is produced.
+    chunks: list[Chunk] = []
+    for msg in all_messages:
+        chunks.extend(
+            _message_to_chunks(
+                msg,
+                export_root,
+                captioner=None,
+                transcriber=None,
+                num_frames=0,
+                do_ocr=False,
+                do_documents=False,
+                reply_lookup=reply_lookup,
+            )
+        )
+
+    if do_conversation_windows and settings.enable_conversation_windows:
+        conv_chunks = _build_conversation_chunks(
+            all_messages,
+            window_size=settings.conversation_window_size,
+            stride=settings.conversation_window_stride,
+            max_gap=settings.conversation_window_max_gap,
+        )
+        chunks.extend(conv_chunks)
+        tqdm.write(
+            f"[reindex-text] adding {len(conv_chunks)} conversation-window chunks "
+            f"(size={settings.conversation_window_size}, "
+            f"stride={settings.conversation_window_stride})"
+        )
+
+    total = 0
+    with tqdm(total=len(chunks), desc="reindex-text", unit="chunk") as bar:
+        for block in _iter_blocks(chunks, embed_batch):
+            vectors = embedder.encode([c.content for c in block], batch_size=embed_batch)
+            store.add([c.to_row() for c in block], vectors)
+            total += len(block)
+            bar.update(len(block))
+
+    store.build_fts()
+    return total

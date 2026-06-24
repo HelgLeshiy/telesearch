@@ -69,6 +69,48 @@ def index(
     )
 
 
+@app.command(name="reindex-text")
+def reindex_text(
+    export: Path = typer.Argument(
+        ...,
+        help="Path to the Telegram export folder (containing result.json) or the result.json file.",
+    ),
+    conversation_windows: bool = typer.Option(
+        True,
+        "--conversation-windows/--no-conversation-windows",
+        help="Index overlapping windows of consecutive messages for conversational context.",
+    ),
+):
+    """Refresh only text + conversation chunks (no media re-processing, no vLLM).
+
+    Use this to add conversation-window context and reply stitching to an
+    existing index without the cost of a full ``--rebuild`` (which would
+    re-caption every photo/video and re-transcribe all audio). Media chunks are
+    left untouched. Safe to run with ``--no-deps``.
+    """
+    from .ingest import parse_export
+    from .index.build import reindex_text as _reindex_text
+
+    settings = get_settings()
+    export_root = export if export.is_dir() else export.parent
+
+    console.print(f"[bold]Parsing[/bold] {export}")
+    messages = list(parse_export(export))
+    console.print(
+        f"Found [cyan]{len(messages)}[/cyan] messages. Refreshing text + conversation chunks..."
+    )
+
+    count = _reindex_text(
+        messages,
+        export_root,
+        settings,
+        do_conversation_windows=conversation_windows,
+    )
+    console.print(
+        f"[bold green]Done.[/bold green] Wrote {count} text/conversation chunks into {settings.db_path}"
+    )
+
+
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Search query."),
