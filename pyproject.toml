@@ -56,6 +56,8 @@ server = [
 s3 = ["boto3>=1.34.0"]
 encryption = ["cryptography>=41.0.0"]
 redis = ["redis>=5.0.0"]
+# PostgreSQL driver for production (use TELESEARCH_DATABASE_URL=postgresql+psycopg://...).
+postgres = ["psycopg[binary]>=3.1.0"]
 all = [
     "faster-whisper>=1.0.0",
     "av>=12.0.0",
@@ -72,6 +74,8 @@ all = [
     "httpx>=0.27.0",
     "alembic>=1.13.0",
     "scikit-learn>=1.3.0",
+    # Enable at-rest blob encryption out of the box in the default image.
+    "cryptography>=41.0.0",
 ]
 
 [project.scripts]

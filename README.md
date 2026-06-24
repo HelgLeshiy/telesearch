@@ -1,17 +1,26 @@
 # telesearch
 
-Local, private **AI search over a large Telegram conversation** — including the
+Local, private **AI search over your conversations and files** — including
 photos and videos — powered entirely by **open-weight models** running on your
-own GPU (built and tuned with an **NVIDIA RTX PRO 6000 / 96 GB** in mind).
+own hardware.
 
-You point it at a Telegram chat export. It reads the text, *describes the
-photos*, *summarizes and transcribes the videos*, *transcribes voice messages*,
-*reads text out of images (OCR)*, and *extracts the contents of attached
-documents* (PDF, Word, Excel, PowerPoint, text/code/CSV) — then puts everything
-into one searchable index. Then you can:
+You point it at a chat export (Telegram, WhatsApp, generic JSON) or any files.
+It reads the text, *describes the photos*, *summarizes and transcribes the
+videos*, *transcribes voice messages*, *reads text out of images (OCR)*, and
+*extracts the contents of attached documents* (PDF, Word, Excel, PowerPoint,
+text/code/CSV) — then puts everything into one searchable index. Then you can
+**search** (semantic + keyword), **ask** questions in natural language (RAG), and
+explore a **knowledge graph** of topics.
 
-- **Search** semantically + by keyword: `docker compose run --rm telesearch search "the receipt from the sushi place"`
-- **Ask** questions in natural language (RAG): `docker compose run --rm telesearch ask "what hotel did we book in Rome?"`
+Two ways to run it:
+
+- **Multi-user service** — a self-hostable web app (REST API + UI) with accounts,
+  workspaces, uploads, background indexing, cross-context search, sharing and a
+  knowledge graph. Runs anywhere (CPU by default): `telesearch serve` /
+  `docker compose up -d web` → http://localhost:8080. See
+  [Multi-user service](#multi-user-service).
+- **Single-user CLI** — the original local workflow:
+  `telesearch index <export>`, `telesearch search "..."`, `telesearch ask "..."`.
 
 Everything runs locally. Nothing leaves your machine.
 
@@ -128,11 +137,12 @@ quantize both to 4-bit AWQ.
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) with Compose v2
-- NVIDIA driver + [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- A GPU available at **index 5** on the host (all services are pinned to that device — edit `device_ids` in `docker-compose.yml` to use a different GPU)
-- A recent NVIDIA driver. The `telesearch` image ships PyTorch built against
-  **CUDA 12.8**, required for Blackwell GPUs (e.g. RTX PRO 6000, `sm_120`); the
-  driver must support CUDA 12.8 or later.
+- **For text-only use (the `web` service): no GPU required** — it runs on CPU.
+- **For media understanding / RAG** (the `media` profile / `cli`): an NVIDIA GPU
+  with the [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
+  Choose which host GPU(s) via `TELESEARCH_GPU_DEVICE_IDS` (default `0`). The
+  image ships PyTorch built against **CUDA 12.8** (required for Blackwell GPUs
+  such as the RTX PRO 6000, `sm_120`); the driver must support CUDA 12.8+.
 
 ### 1. Export your Telegram chat
 
@@ -161,28 +171,40 @@ or add `HUGGING_FACE_HUB_TOKEN` for gated models.
 ```bash
 docker compose build
 
-# VLM server (downloads the model on first run — can take a while)
-docker compose up -d vllm
-
-# Optional web UI at http://localhost:8501
-docker compose up -d ui
+# Multi-user web service (REST API + UI) at http://localhost:8080. Runs on CPU
+# out of the box — no GPU required for text indexing and search.
+docker compose up -d web
 ```
 
-The stack runs three services:
+To add **media understanding** (image/video captioning, OCR, voice transcripts)
+and **`ask` RAG**, also start the GPU VLM/LLM server and point the service at a
+GPU (set `TELESEARCH_DEVICE=cuda` in `.env`):
 
-| Service | Role |
-|---|---|
-| **`vllm`** | OpenAI-compatible VLM/chat server (Qwen2.5-VL by default) |
-| **`telesearch`** | CLI for indexing, search, and ask (invoked via `docker compose run`) |
-| **`ui`** | Streamlit search UI |
+```bash
+docker compose --profile media up -d vllm web
+```
 
-All GPU workloads use **physical GPU 5 only** (`device_ids: ["5"]` in
-`docker-compose.yml`). Inside the container that GPU is remapped to `cuda:0`, so
-`TELESEARCH_DEVICE=cuda` is correct — do not set `CUDA_VISIBLE_DEVICES=5` in
-the service environment.
+For the original **single-user CLI** instead of the service, use the `cli` profile
+(see [Usage](#usage)). For **PostgreSQL** instead of SQLite, build with the
+`postgres` extra, start `docker compose --profile postgres up -d db`, and set
+`TELESEARCH_DATABASE_URL` (see `.env.example`).
 
-Persistent data lives in Docker volumes: `telesearch-data` (LanceDB index) and
-`huggingface-cache` (downloaded model weights).
+The compose stack defines these services:
+
+| Service | Profile | Role |
+|---|---|---|
+| **`web`** | default | Multi-user HTTP service: REST API + web UI (auth, uploads, search, graph) |
+| **`vllm`** | `media` | OpenAI-compatible VLM/chat server (Qwen2.5-VL) for captioning + RAG (GPU) |
+| **`db`** | `postgres` | PostgreSQL (optional; SQLite is the default) |
+| **`cli`** | `cli` | Single-user CLI for `index`/`search`/`ask` (legacy workflow) |
+
+GPU workloads (`vllm`, `cli`) attach the host GPU id(s) in
+`TELESEARCH_GPU_DEVICE_IDS` (default `0`), remapped to `cuda:0` inside the
+container — do not set `CUDA_VISIBLE_DEVICES` in the service environment.
+
+Persistent data lives in Docker volumes: `telesearch-data` (LanceDB index, blobs,
+SQLite DB), `postgres-data` (when using Postgres) and `huggingface-cache`
+(downloaded model weights).
 
 #### vLLM GPU memory tuning
 
@@ -238,31 +260,31 @@ read-only at `/export` (from `TELESEARCH_EXPORT_ROOT` in `.env`).
 
 ```bash
 # Build the index (captions images, summarizes+transcribes videos, transcribes voice)
-docker compose run --rm telesearch index /export
+docker compose run --rm cli index /export
 
 # Skip heavy media steps for a quick text-only index (documents need no GPU)
-docker compose run --rm telesearch index /export --no-videos --no-audio --no-ocr
+docker compose run --rm cli index /export --no-videos --no-audio --no-ocr
 
 # Index ONLY typed text + documents (no VLM server needed)
-docker compose run --rm --no-deps telesearch index /export --no-images --no-videos --no-audio --no-ocr
+docker compose run --rm --no-deps cli index /export --no-images --no-videos --no-audio --no-ocr
 
 # Hybrid search (with cross-encoder rerank by default)
-docker compose run --rm telesearch search "sunset photo from the beach trip"
-docker compose run --rm telesearch search "invoice" --modality image      # only photo captions
-docker compose run --rm telesearch search "total amount" --modality ocr    # only text read FROM images
-docker compose run --rm telesearch search "quarterly budget" --modality document  # only file contents
-docker compose run --rm telesearch search "address" --modality audio       # only voice transcripts
-docker compose run --rm telesearch search "quick keyword lookup" --no-rerank   # skip reranking for speed
+docker compose run --rm cli search "sunset photo from the beach trip"
+docker compose run --rm cli search "invoice" --modality image      # only photo captions
+docker compose run --rm cli search "total amount" --modality ocr    # only text read FROM images
+docker compose run --rm cli search "quarterly budget" --modality document  # only file contents
+docker compose run --rm cli search "address" --modality audio       # only voice transcripts
+docker compose run --rm cli search "quick keyword lookup" --no-rerank   # skip reranking for speed
 
 # Ask a question (RAG over the conversation, cites message ids)
-docker compose run --rm telesearch ask "where did we say we'd meet on Saturday?"
+docker compose run --rm cli ask "where did we say we'd meet on Saturday?"
 
 # Show config + index status
-docker compose run --rm telesearch info
+docker compose run --rm cli info
 
 # Add conversation-window + reply context to an EXISTING index, cheaply
 # (refreshes only text/conversation chunks; no media re-processing, no vLLM)
-docker compose run --rm --no-deps telesearch reindex-text /export
+docker compose run --rm --no-deps cli reindex-text /export
 ```
 
 `--no-deps` skips starting the `vllm` service — use it for text-only indexing
@@ -294,10 +316,10 @@ thousands of VLM/Whisper calls. The build is designed for that:
 
 ```bash
 # Start (or resume) a full index; safe to Ctrl-C and re-run with the SAME flags
-docker compose run --rm telesearch index /export --workers 12
+docker compose run --rm cli index /export --workers 12
 
 # Force a clean rebuild
-docker compose run --rm telesearch index /export --rebuild
+docker compose run --rm cli index /export --rebuild
 ```
 
 Note: resume tracks progress per message, so re-run with the *same* flags to
@@ -306,19 +328,16 @@ flags mid-way could otherwise skip messages whose media wasn't processed yet).
 
 ### Web UI
 
+The multi-user service ships its own web UI (upload, jobs, search with filters,
+saved presets, knowledge graph). Start it and open http://localhost:8080:
+
 ```bash
-docker compose up -d ui
+docker compose up -d web
 ```
 
-Open http://localhost:8501. Thumbnails require `TELESEARCH_EXPORT_ROOT` to be
-set in `.env` (the export is mounted at `/export` inside the container).
-
-The UI mirrors the CLI: filter Search by any modality (text, conversation,
-image, video, audio, ocr, document), and an **Advanced** panel exposes the
-retrieval knobs — HyDE and surrounding-context size for Ask, cross-encoder
-rerank for Search. Image/video/voice results play inline and document results
-offer a download. Multi-line conversation windows and transcripts keep their
-line breaks.
+See [Multi-user service](#multi-user-service) for the full feature list and API.
+(A minimal legacy Streamlit UI for the single-user index also still exists at
+`telesearch/ui/app.py` via the `ui` extra, but the `web` service supersedes it.)
 
 ### Development (without Docker)
 
@@ -327,12 +346,17 @@ For local hacking on the Python package:
 ```bash
 pip install -e ".[all]" pytest   # also needs the ffmpeg system binary
 cp .env.example .env
+
+# Single-user CLI
 python3 -m telesearch.cli index /path/to/export
 python3 -m pytest
+
+# Or run the multi-user service (http://localhost:8080)
+python3 -m telesearch.cli serve --port 8080
 ```
 
 Serve a VLM yourself (or point `TELESEARCH_LLM_BASE_URL` at an existing
-OpenAI-compatible endpoint) when running outside Compose.
+OpenAI-compatible endpoint) when you need media understanding or `ask` RAG.
 
 ---
 
@@ -340,13 +364,14 @@ OpenAI-compatible endpoint) when running outside Compose.
 
 ```
 Dockerfile               # telesearch image (PyTorch CUDA + ffmpeg)
-docker-compose.yml       # vllm + telesearch CLI + Streamlit UI (GPU 5)
+docker-compose.yml       # web service + optional vllm / postgres / cli
 .env.example             # configuration template
+alembic/                 # database migrations (service)
 
 telesearch/
-  config.py              # settings (env / .env)
+  config.py              # engine settings (env / .env)
   models.py              # Message + Chunk data classes
-  ingest/telegram_parser.py   # result.json -> Messages
+  ingest/                # source-agnostic parsers (telegram, whatsapp, json, files)
   media/captioner.py     # VLM image / video-frame captioning + OCR
   media/video.py         # frame extraction (PyAV/ffmpeg)
   media/asr.py           # Whisper transcription
@@ -357,8 +382,12 @@ telesearch/
   search/retriever.py    # hybrid retrieval + rerank orchestration
   search/reranker.py     # bge-reranker-v2-m3 cross-encoder
   search/rag.py          # question answering with a local chat model
-  cli.py                 # `telesearch` command
-  ui/app.py              # optional Streamlit UI
+  search/multi.py        # multi-store fan-out (cross-context) search
+  service/               # reusable indexing/search service layer
+  graph/                 # knowledge-graph builders (topics G1+G2, facts G3)
+  server/                # multi-user HTTP service (FastAPI: auth, jobs, API, UI)
+  cli.py                 # `telesearch` command (index/search/ask/serve)
+  ui/app.py              # legacy single-user Streamlit UI (superseded by server/)
 ```
 
 ---
@@ -383,7 +412,7 @@ telesearch/
   chunks alone — no VLM/Whisper, so it's fast and runs with `--no-deps`:
 
 ```bash
-docker compose run --rm --no-deps telesearch reindex-text /export
+docker compose run --rm --no-deps cli reindex-text /export
 ```
 
   (A plain `index` re-run without `--rebuild` will *not* add windows to an
@@ -397,12 +426,22 @@ docker compose run --rm --no-deps telesearch reindex-text /export
 - Privacy: all models are open-weight and run locally; the OpenAI client only
   talks to *your* local server.
 
-## Multi-user service (optional)
+## Multi-user service
 
-Beyond the single-user CLI, telesearch ships an optional multi-user HTTP service
-(`pip install 'telesearch[server]'`, then `telesearch serve`). It turns the
-engine into a small self-hostable SaaS with portable defaults (SQLite + local
+Beyond the single-user CLI, telesearch ships a multi-user HTTP service that turns
+the engine into a small self-hostable SaaS with portable defaults (SQLite + local
 blob storage + an in-process worker) and pluggable production backends.
+
+Quick start with Docker (no GPU needed for text):
+
+```bash
+cp .env.example .env            # set TELESEARCH_SECRET_KEY to a random value
+docker compose up -d web        # REST API + web UI at http://localhost:8080
+```
+
+Or without Docker: `pip install 'telesearch[server]'` then `telesearch serve`.
+For production, run DB migrations with Alembic (`alembic upgrade head`) instead of
+the dev auto-create, and set a Postgres `TELESEARCH_DATABASE_URL`.
 
 Features:
 
