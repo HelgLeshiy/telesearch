@@ -108,13 +108,23 @@ class VectorStore:
     def count(self) -> int:
         return self.table.count_rows()
 
-    def existing_message_ids(self) -> set[int]:
-        """Return the set of message ids already present (for resumable builds)."""
+    def existing_message_ids(self, collection_id: str | None = None) -> set[int]:
+        """Return message ids already present (for resumable builds).
+
+        When ``collection_id`` is given, resume is scoped to that collection so
+        multiple sources sharing one workspace (and thus overlapping message-id
+        spaces) don't shadow each other. On indexes created before the
+        ``collection_id`` column existed, the filter is ignored (all ids).
+        """
         if self.count() == 0:
             return set()
         try:
-            ids = self.table.to_arrow().column("message_id").to_pylist()
-            return set(ids)
+            tbl = self.table.to_arrow()
+            if collection_id is not None and "collection_id" in tbl.schema.names:
+                import pyarrow.compute as pc
+
+                tbl = tbl.filter(pc.equal(tbl.column("collection_id"), collection_id))
+            return set(tbl.column("message_id").to_pylist())
         except Exception:
             return set()
 
@@ -124,18 +134,28 @@ class VectorStore:
             TABLE_NAME, schema=_schema(self.dim), mode="overwrite"
         )
 
-    def delete_modalities(self, modalities: list[str] | tuple[str, ...]) -> int:
+    def delete_modalities(
+        self,
+        modalities: list[str] | tuple[str, ...],
+        collection_id: str | None = None,
+    ) -> int:
         """Delete all chunks of the given modalities; return rows removed.
 
         Used by the text-only reindex to refresh just the text-derived chunks
         (``text`` + ``conversation``) without touching the expensive media
-        chunks (captions, transcripts, OCR, documents).
+        chunks (captions, transcripts, OCR, documents). When ``collection_id``
+        is given the delete is scoped to that collection so refreshing one
+        source doesn't wipe sibling sources in the same workspace.
         """
         if not modalities:
             return 0
         before = self.count()
         mods = ", ".join(f"'{m}'" for m in modalities)
-        self.table.delete(f"modality IN ({mods})")
+        where = f"modality IN ({mods})"
+        if collection_id is not None:
+            safe = collection_id.replace("'", "''")
+            where += f" AND collection_id = '{safe}'"
+        self.table.delete(where)
         return before - self.count()
 
     def _apply_where(self, search, where: str | None):

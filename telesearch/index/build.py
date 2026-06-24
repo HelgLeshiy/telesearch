@@ -44,6 +44,10 @@ def _message_to_chunks(
 ) -> list[Chunk]:
     """Turn one message into one or more searchable chunks."""
     chunks: list[Chunk] = []
+    # Namespace chunk ids by collection so multiple sources in one workspace
+    # (overlapping message-id spaces) don't collide on chunk_id. Empty collection
+    # (the legacy single-index CLI case) keeps the original "id:modality" form.
+    cid_prefix = f"{collection_id}:" if collection_id else ""
 
     def base(
         modality: str,
@@ -53,7 +57,7 @@ def _message_to_chunks(
         suffix: str = "",
     ) -> Chunk:
         return Chunk(
-            chunk_id=f"{msg.id}:{modality}{suffix}",
+            chunk_id=f"{cid_prefix}{msg.id}:{modality}{suffix}",
             message_id=msg.id,
             chat=msg.chat,
             sender=msg.sender,
@@ -273,6 +277,7 @@ def _build_conversation_chunks(
 
     chunks: list[Chunk] = []
     seen_cids: set[str] = set()
+    cid_prefix = f"{collection_id}:" if collection_id else ""
     for session in sessions:
         n = len(session)
         for start in range(0, n, stride):
@@ -283,7 +288,7 @@ def _build_conversation_chunks(
             if len(lines) < 2:
                 continue
             first = window[0]
-            cid = f"{first.id}:conversation"
+            cid = f"{cid_prefix}{first.id}:conversation"
             if cid in seen_cids:
                 continue
             seen_cids.add(cid)
@@ -495,7 +500,7 @@ def build_index(
         store.drop()
         seen: set[int] = set()
     else:
-        seen = store.existing_message_ids() if resume else set()
+        seen = store.existing_message_ids(collection_id or None) if resume else set()
 
     messages = [m for m in all_messages if m.id not in seen]
     if seen:
@@ -610,7 +615,7 @@ def reindex_text(
     store = VectorStore(db_path or settings.db_path, embedder.dim)
     embed_batch = settings.embed_batch_size
 
-    removed = store.delete_modalities(["text", "conversation"])
+    removed = store.delete_modalities(["text", "conversation"], collection_id or None)
     tqdm.write(f"[reindex-text] removed {removed} existing text/conversation chunks")
 
     # Text-only pass: captioner/transcriber/documents disabled, so only the

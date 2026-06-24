@@ -78,6 +78,55 @@ def test_hybrid_search_prefilters_by_collection(tmp_path):
     assert rows[0]["collection_id"] == "A"
 
 
+def test_existing_message_ids_scoped_by_collection(tmp_path):
+    store = VectorStore(tmp_path / "db", 8)
+    chunks = [
+        _chunk("A:1:text", 1, "x", collection_id="A"),
+        _chunk("A:2:text", 2, "y", collection_id="A"),
+        _chunk("B:1:text", 1, "z", collection_id="B"),
+    ]
+    vecs = np.ones((3, 8), dtype="float32")
+    store.add([c.to_row() for c in chunks], vecs)
+
+    assert store.existing_message_ids("A") == {1, 2}
+    assert store.existing_message_ids("B") == {1}
+    assert store.existing_message_ids() == {1, 2}
+
+
+def test_delete_modalities_scoped_by_collection(tmp_path):
+    store = VectorStore(tmp_path / "db", 8)
+    chunks = [
+        _chunk("A:1:text", 1, "x", collection_id="A"),
+        _chunk("B:1:text", 1, "z", collection_id="B"),
+    ]
+    vecs = np.ones((2, 8), dtype="float32")
+    store.add([c.to_row() for c in chunks], vecs)
+
+    removed = store.delete_modalities(["text"], collection_id="A")
+    assert removed == 1
+    remaining = store.table.to_arrow().column("collection_id").to_pylist()
+    assert remaining == ["B"]
+
+
+def test_message_to_chunks_namespaces_chunk_id_by_collection():
+    from telesearch.index.build import _message_to_chunks
+    from telesearch.models import Message
+
+    msg = Message(id=7, chat="c", sender="s", timestamp=0, date_str="", text="hi")
+    chunks = _message_to_chunks(
+        msg, "/nonexistent", captioner=None, transcriber=None, num_frames=0,
+        collection_id="mycol",
+    )
+    assert chunks[0].chunk_id == "mycol:7:text"
+    assert chunks[0].collection_id == "mycol"
+
+    # Empty collection keeps the legacy id form.
+    plain = _message_to_chunks(
+        msg, "/nonexistent", captioner=None, transcriber=None, num_frames=0,
+    )
+    assert plain[0].chunk_id == "7:text"
+
+
 def test_chunk_roundtrip_preserves_new_fields(tmp_path):
     store = VectorStore(tmp_path / "db", 8)
     c = _chunk("1:text", 1, "hello", collection_id="X", source_kind="whatsapp")
