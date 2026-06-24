@@ -60,7 +60,13 @@ def _render_media(r) -> None:
     if not media_file.exists():
         return
     if r.modality == "image":
-        st.image(str(media_file), width=320)
+        # Render at native resolution scaled to a bounded column (sharp on
+        # high-DPI screens, unlike a small fixed pixel width) with Streamlit's
+        # built-in fullscreen button for the original. Telegram exports store
+        # compressed photos, so this is as crisp as the source allows.
+        img_col, _ = st.columns([2, 1])
+        with img_col:
+            st.image(str(media_file), use_container_width=True)
     elif r.modality == "video":
         st.video(str(media_file))
     elif r.modality == "audio":
