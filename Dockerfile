@@ -14,8 +14,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md requirements.txt ./
+COPY pyproject.toml README.md requirements.txt alembic.ini ./
 COPY telesearch ./telesearch
+COPY alembic ./alembic
 
 RUN pip install --no-cache-dir -e ".[all]"
 
@@ -23,5 +24,7 @@ ENV TELESEARCH_DEVICE=cuda \
     TELESEARCH_WHISPER_COMPUTE=float16 \
   PYTHONUNBUFFERED=1
 
+# Default to the CLI; the compose `web` service overrides this to run the
+# multi-user HTTP service (`telesearch serve`).
 ENTRYPOINT ["telesearch"]
 CMD ["info"]

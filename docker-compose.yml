@@ -1,29 +1,61 @@
-# telesearch stack — pins all GPU workloads to physical GPU 5 only.
+# telesearch stack.
 #
-# Prerequisites:
-#   - NVIDIA driver + nvidia-container-toolkit
-#   - Copy .env.example to .env and set TELESEARCH_EXPORT_ROOT
+# Two ways to run:
+#   1. Multi-user service (default):  the `web` service exposes the REST API +
+#      web UI on http://localhost:8080. Runs anywhere (CPU; SQLite + local blob
+#      storage + an in-process worker). This is the recommended way.
+#   2. Single-user CLI (profile `cli`): the original index/search/ask commands.
 #
-# GPU note: device_ids selects host GPU 5. Inside the container it is remapped
-# to cuda:0 — do NOT set CUDA_VISIBLE_DEVICES=5 in service env vars.
+# Optional add-ons (off by default, enable with --profile):
+#   --profile media     vLLM VLM/LLM server (GPU) for image/video captioning and
+#                       `ask` RAG. Pin to a GPU via the `gpu` anchor below.
+#   --profile postgres  PostgreSQL instead of the default SQLite.
 #
-# Examples:
-#   docker compose build
-#   docker compose up -d vllm          # start VLM server (downloads model on first run)
-#   docker compose run --rm telesearch index /export
-#   docker compose run --rm telesearch search "beach photo"
-#   docker compose up -d ui            # Streamlit on http://localhost:8501
+# Quick start:
+#   cp .env.example .env   # set TELESEARCH_SECRET_KEY at least
+#   docker compose up -d web
+#   open http://localhost:8080
+#
+# With media understanding (needs an NVIDIA GPU):
+#   docker compose --profile media up -d vllm web
+#   # and set TELESEARCH_DEVICE=cuda for `web` (see below).
 
-x-gpu-5: &gpu-5
+x-gpu: &gpu
   gpus:
     - driver: nvidia
-      device_ids: ["5"]
+      device_ids: ["${TELESEARCH_GPU_DEVICE_IDS:-0}"]
       capabilities: [gpu]
 
 services:
+  # ---- Multi-user HTTP service (REST API + web UI) -------------------------
+  web:
+    build: .
+    entrypoint: ["telesearch", "serve", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "${TELESEARCH_WEB_HOST_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TELESEARCH_DATA_DIR: /app/data
+      # CPU by default so it runs without a GPU. For media indexing/RAG, set
+      # TELESEARCH_DEVICE=cuda in .env and attach a GPU (see the `gpu` anchor).
+      TELESEARCH_DEVICE: ${TELESEARCH_DEVICE:-cpu}
+      TELESEARCH_WHISPER_COMPUTE: ${TELESEARCH_WHISPER_COMPUTE:-int8}
+      # Blank DATABASE_URL => SQLite under DATA_DIR. Point at the `db` service to
+      # use Postgres (see the postgres profile).
+      TELESEARCH_DATABASE_URL: ${TELESEARCH_DATABASE_URL:-}
+      TELESEARCH_LLM_BASE_URL: ${TELESEARCH_LLM_BASE_URL:-http://vllm:8000/v1}
+    volumes:
+      - telesearch-data:/app/data
+      - huggingface-cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+  # ---- Optional: VLM/LLM server for media captioning + RAG (GPU) -----------
   vllm:
     image: vllm/vllm-openai:latest
-    <<: *gpu-5
+    <<: *gpu
+    profiles: ["media"]
     ipc: host
     ports:
       - "${TELESEARCH_VLLM_HOST_PORT:-8000}:8000"
@@ -32,17 +64,6 @@ services:
     environment:
       HF_HOME: /root/.cache/huggingface
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
-    # The vllm/vllm-openai image's entrypoint is already ["vllm", "serve"],
-    # so the model is passed as a positional arg (do NOT repeat "serve").
-    #
-    # Memory notes (why --max-model-len / --limit-mm-per-prompt are set):
-    #   The model's full context is 128k tokens, which vLLM uses by default.
-    #   Reserving KV cache for 128k needs ~31 GiB on top of the ~62 GiB model
-    #   weights, which overflows the GPU. telesearch only sends a few images
-    #   plus a short prompt and caps output at 256 tokens, so a much smaller
-    #   context is plenty. We also disable native-video profiling: video frames
-    #   are sent as ordinary images, never as a native video tensor, so the
-    #   default 1-video warmup just wastes memory.
     command:
       - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
       - --host
@@ -53,11 +74,6 @@ services:
       - ${TELESEARCH_VLM_MODEL:-Qwen/Qwen2.5-VL-32B-Instruct}
       - --max-model-len
       - "${TELESEARCH_VLLM_MAX_MODEL_LEN:-32768}"
-      # Default leaves headroom on the GPU for telesearch's own local models
-      # (bge-m3 embeddings + Whisper) since the telesearch/ui services share the
-      # SAME physical GPU as vLLM. At 0.92 vLLM grabbed ~88 GiB of a 96 GiB card
-      # and telesearch then OOM'd. ~0.80 keeps ~18 GiB free for those models.
-      # Raise it toward 0.92 if vLLM runs on a dedicated GPU.
       - --gpu-memory-utilization
       - "${TELESEARCH_VLLM_GPU_MEMORY_UTILIZATION:-0.80}"
       - --limit-mm-per-prompt
@@ -70,55 +86,45 @@ services:
       start_period: 600s
     restart: unless-stopped
 
-  telesearch:
-    build: .
-    <<: *gpu-5
-    env_file:
-      - path: .env
-        required: false
+  # ---- Optional: PostgreSQL (instead of the default SQLite) ----------------
+  # Build the image with the `postgres` extra and set, in .env:
+  #   TELESEARCH_DATABASE_URL=postgresql+psycopg://telesearch:telesearch@db:5432/telesearch
+  db:
+    image: postgres:16
+    profiles: ["postgres"]
     environment:
-      TELESEARCH_DATA_DIR: /app/data
-      TELESEARCH_LLM_BASE_URL: http://vllm:8000/v1
-      TELESEARCH_DEVICE: cuda
-      TELESEARCH_WHISPER_COMPUTE: float16
-      # Reduce CUDA allocator fragmentation when sharing the GPU with vLLM.
-      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+      POSTGRES_USER: ${POSTGRES_USER:-telesearch}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-telesearch}
+      POSTGRES_DB: ${POSTGRES_DB:-telesearch}
     volumes:
-      - telesearch-data:/app/data
-      - ${TELESEARCH_EXPORT_ROOT:-./export}:/export:ro
-      - huggingface-cache:/root/.cache/huggingface
-    depends_on:
-      vllm:
-        condition: service_healthy
-    profiles:
-      - cli
-
-  ui:
-    build: .
-    <<: *gpu-5
-    entrypoint: ["streamlit", "run", "telesearch/ui/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
-    ports:
-      - "${TELESEARCH_UI_HOST_PORT:-8501}:8501"
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      TELESEARCH_DATA_DIR: /app/data
-      TELESEARCH_EXPORT_ROOT: /export
-      TELESEARCH_LLM_BASE_URL: http://vllm:8000/v1
-      TELESEARCH_DEVICE: cuda
-      TELESEARCH_WHISPER_COMPUTE: float16
-      # Reduce CUDA allocator fragmentation when sharing the GPU with vLLM.
-      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-    volumes:
-      - telesearch-data:/app/data
-      - ${TELESEARCH_EXPORT_ROOT:-./export}:/export:ro
-      - huggingface-cache:/root/.cache/huggingface
-    depends_on:
-      vllm:
-        condition: service_healthy
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-telesearch}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
+
+  # ---- Optional: single-user CLI (legacy workflow) -------------------------
+  cli:
+    build: .
+    <<: *gpu
+    profiles: ["cli"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TELESEARCH_DATA_DIR: /app/data
+      TELESEARCH_LLM_BASE_URL: ${TELESEARCH_LLM_BASE_URL:-http://vllm:8000/v1}
+      TELESEARCH_DEVICE: ${TELESEARCH_DEVICE:-cuda}
+      TELESEARCH_WHISPER_COMPUTE: ${TELESEARCH_WHISPER_COMPUTE:-float16}
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    volumes:
+      - telesearch-data:/app/data
+      - ${TELESEARCH_EXPORT_ROOT:-./export}:/export:ro
+      - huggingface-cache:/root/.cache/huggingface
 
 volumes:
   telesearch-data:
   huggingface-cache:
+  postgres-data:
