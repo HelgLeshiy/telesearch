@@ -8,5 +8,6 @@ embedding stack); UMAP and an LLM are optional enhancements.
 """
 
 from .build import GraphParams, build_graph
+from .g3 import build_fact_graph
 
-__all__ = ["build_graph", "GraphParams"]
+__all__ = ["build_graph", "GraphParams", "build_fact_graph"]
