@@ -127,6 +127,17 @@ def test_message_to_chunks_namespaces_chunk_id_by_collection():
     assert plain[0].chunk_id == "7:text"
 
 
+def test_store_coerces_nonstring_fields(tmp_path):
+    # Defense in depth: a row with a non-string sender (e.g. an int channel id)
+    # must not break the Arrow conversion / fail indexing.
+    store = VectorStore(tmp_path / "db", 8)
+    row = _chunk("1:text", 1, "hi").to_row()
+    row["sender"] = 900123  # int, as a buggy/edge parser might produce
+    store.add([row], np.ones((1, 8), dtype="float32"))
+    stored = store.table.to_arrow().to_pylist()[0]
+    assert stored["sender"] == "900123"
+
+
 def test_chunk_roundtrip_preserves_new_fields(tmp_path):
     store = VectorStore(tmp_path / "db", 8)
     c = _chunk("1:text", 1, "hello", collection_id="X", source_kind="whatsapp")

@@ -118,8 +118,10 @@ def parse_export(export_path: str | Path) -> Iterator[Message]:
 
         yield Message(
             id=int(msg.get("id", 0)),
-            chat=chat_name,
-            sender=msg.get("from") or msg.get("from_id") or "unknown",
+            chat=str(chat_name),
+            # Coerce to str: channel/anonymous posts have ``from: null`` and an
+            # integer ``from_id`` (the channel id), which must not leak as an int.
+            sender=str(msg.get("from") or msg.get("from_id") or "unknown"),
             timestamp=timestamp,
             date_str=str(msg.get("date", "")),
             text=text,
@@ -133,7 +135,19 @@ def parse_export(export_path: str | Path) -> Iterator[Message]:
 
 
 def _result_json(root: Path) -> Path:
-    return root / "result.json" if root.is_dir() else root
+    """Locate the Telegram export JSON under ``root``.
+
+    Prefers the canonical ``result.json`` but falls back to any single ``*.json``
+    in the folder, so a renamed upload (e.g. ``results.json`` or
+    ``telegram-chat.json``) still works when the parser is forced.
+    """
+    if root.is_file():
+        return root
+    canonical = root / "result.json"
+    if canonical.exists():
+        return canonical
+    jsons = sorted(root.glob("*.json")) or sorted(root.rglob("*.json"))
+    return jsons[0] if jsons else canonical
 
 
 class TelegramParser:
@@ -142,9 +156,9 @@ class TelegramParser:
     name = "telegram"
 
     def sniff(self, ctx: SourceContext) -> float:
-        """High confidence when a Telegram-shaped ``result.json`` is present."""
+        """High confidence when a Telegram-shaped export JSON is present."""
         result = _result_json(ctx.root)
-        if result.name != "result.json" or not result.exists():
+        if result.suffix.lower() != ".json" or not result.exists():
             return 0.0
         try:
             with result.open("r", encoding="utf-8") as fh:
