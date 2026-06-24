@@ -37,6 +37,8 @@ def enqueue(
     job_type: str,
     source_id: str | None = None,
     params: dict | None = None,
+    lane: str = "cpu",
+    priority: int = 0,
 ) -> Job:
     job = Job(
         workspace_id=workspace_id,
@@ -44,11 +46,27 @@ def enqueue(
         type=job_type,
         state="pending",
         params=params or {},
+        lane=lane,
+        priority=priority,
     )
     db.add(job)
     db.commit()
     db.refresh(job)
     return job
+
+
+def pending_job_count(db: Session, workspace_id: str) -> int:
+    from sqlalchemy import func
+
+    return int(
+        db.scalar(
+            select(func.count(Job.id)).where(
+                Job.workspace_id == workspace_id,
+                Job.state.in_(("pending", "running")),
+            )
+        )
+        or 0
+    )
 
 
 @register_handler("ingest")
@@ -181,11 +199,16 @@ class Worker:
         self._thread: threading.Thread | None = None
 
     def _claim_pending(self) -> str | None:
+        lanes = self.server_settings.worker_lane_set
         db = self.session_factory()
         try:
-            job = db.scalars(
-                select(Job).where(Job.state == "pending").order_by(Job.created_at)
-            ).first()
+            stmt = select(Job).where(Job.state == "pending")
+            if lanes:
+                stmt = stmt.where(Job.lane.in_(lanes))
+            # Highest priority first, then oldest. Higher-priority/cheaper work
+            # is served ahead of a big media job so nobody is starved.
+            stmt = stmt.order_by(Job.priority.desc(), Job.created_at)
+            job = db.scalars(stmt).first()
             return job.id if job else None
         finally:
             db.close()
