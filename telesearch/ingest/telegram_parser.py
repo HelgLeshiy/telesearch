@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from ..models import Message
+from .base import SourceContext
 
 
 def _flatten_text(text: Any) -> str:
@@ -127,4 +128,37 @@ def parse_export(export_path: str | Path) -> Iterator[Message]:
             media_path=media_path,
             mime_type=msg.get("mime_type"),
             file_name=msg.get("file_name"),
+            source_kind="telegram",
         )
+
+
+def _result_json(root: Path) -> Path:
+    return root / "result.json" if root.is_dir() else root
+
+
+class TelegramParser:
+    """:class:`~telesearch.ingest.base.Parser` for Telegram Desktop exports."""
+
+    name = "telegram"
+
+    def sniff(self, ctx: SourceContext) -> float:
+        """High confidence when a Telegram-shaped ``result.json`` is present."""
+        result = _result_json(ctx.root)
+        if result.name != "result.json" or not result.exists():
+            return 0.0
+        try:
+            with result.open("r", encoding="utf-8") as fh:
+                head = fh.read(4096)
+        except OSError:
+            return 0.0
+        # Telegram exports always carry a top-level "messages" array; the
+        # "type"/"date_unixtime" markers make a false positive very unlikely.
+        if '"messages"' in head and ('"date_unixtime"' in head or '"type"' in head):
+            return 0.95
+        return 0.0
+
+    def parse(self, ctx: SourceContext) -> Iterator[Message]:
+        for msg in parse_export(_result_json(ctx.root)):
+            if ctx.chat_name:
+                msg.chat = ctx.chat_name
+            yield msg
