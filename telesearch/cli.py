@@ -241,6 +241,29 @@ def ask(
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind address."),
+    port: int = typer.Option(8080, help="Port to listen on."),
+    reload: bool = typer.Option(False, help="Auto-reload on code changes (dev)."),
+):
+    """Run the multi-user HTTP service (REST API + minimal web UI).
+
+    Requires the 'server' extra: pip install 'telesearch[server]'. Uses portable
+    defaults (SQLite + local blob storage + an in-process worker); point
+    TELESEARCH_DATABASE_URL / TELESEARCH_BLOB_BACKEND at Postgres / S3 for prod.
+    """
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover
+        raise typer.BadParameter(
+            "the HTTP service needs the 'server' extra: pip install 'telesearch[server]'"
+        ) from exc
+
+    console.print(f"[bold green]telesearch[/bold green] serving on http://{host}:{port}")
+    uvicorn.run("telesearch.server.app:app", host=host, port=port, reload=reload)
+
+
+@app.command()
 def info():
     """Show current configuration and index status."""
     from .index.store import VectorStore, TABLE_NAME

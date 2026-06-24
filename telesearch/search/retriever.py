@@ -40,11 +40,23 @@ class SearchResult:
 
 
 class Retriever:
-    def __init__(self, settings: Settings, *, db_path: str | Path | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        db_path: str | Path | None = None,
+        embedder: Optional[TextEmbedder] = None,
+        reranker: Optional[Reranker] = None,
+    ):
         self.settings = settings
-        self.embedder = TextEmbedder(settings)
+        # Allow sharing the (heavy) embedder/reranker across many workspace
+        # retrievers so the models load once per process, not per workspace.
+        self.embedder = embedder or TextEmbedder(settings)
         self.store = VectorStore(db_path or settings.db_path, self.embedder.dim)
-        self._reranker = Reranker(settings) if settings.use_reranker else None
+        if reranker is not None:
+            self._reranker = reranker
+        else:
+            self._reranker = Reranker(settings) if settings.use_reranker else None
 
     def search(
         self,

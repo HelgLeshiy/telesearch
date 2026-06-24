@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>telesearch</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>telesearch</h1>
+    <div id="user-bar" class="hidden">
+      <span id="user-email"></span>
+      <select id="workspace-select"></select>
+      <button id="logout">Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Auth -->
+    <section id="auth" class="card">
+      <div class="tabs">
+        <button class="tab active" data-mode="login">Log in</button>
+        <button class="tab" data-mode="register">Register</button>
+      </div>
+      <form id="auth-form">
+        <input id="auth-name" type="text" placeholder="Name (register only)" class="hidden" />
+        <input id="auth-email" type="email" placeholder="Email" required />
+        <input id="auth-password" type="password" placeholder="Password (min 8)" required />
+        <button type="submit" id="auth-submit">Log in</button>
+      </form>
+      <p id="auth-error" class="error"></p>
+    </section>
+
+    <!-- App -->
+    <div id="app" class="hidden">
+      <section class="card">
+        <h2>Upload a source</h2>
+        <form id="upload-form">
+          <input id="file" type="file" required />
+          <input id="src-name" type="text" placeholder="Name (optional)" />
+          <input id="src-kind" type="text" placeholder="Parser kind (optional, e.g. telegram)" />
+          <label class="check"><input id="src-media" type="checkbox" /> index media (needs GPU)</label>
+          <button type="submit">Upload &amp; index</button>
+        </form>
+        <p id="upload-status" class="muted"></p>
+      </section>
+
+      <section class="card">
+        <h2>Sources &amp; jobs</h2>
+        <table id="sources-table"><thead>
+          <tr><th>Name</th><th>Kind</th><th>Status</th><th>Size</th><th></th></tr>
+        </thead><tbody></tbody></table>
+        <h3>Recent jobs</h3>
+        <ul id="jobs-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Search</h2>
+        <form id="search-form">
+          <input id="q" type="text" placeholder="Search your knowledge base..." required />
+          <div class="filters">
+            <input id="f-since" type="date" title="from date" />
+            <input id="f-until" type="date" title="to date" />
+            <input id="f-modality" type="text" placeholder="modality (e.g. text)" />
+          </div>
+          <button type="submit">Search</button>
+        </form>
+        <div id="results"></div>
+      </section>
+    </div>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
