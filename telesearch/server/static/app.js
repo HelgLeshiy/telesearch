@@ -262,9 +262,12 @@ function renderSources(sources) {
   tb.innerHTML = "";
   sources.forEach((s) => {
     const tr = document.createElement("tr");
+    const statusCell = s.error
+      ? `<span class="badge" title="${esc(s.error)}">${s.status} ⚠</span>`
+      : `<span class="badge">${s.status}</span>`;
     tr.innerHTML =
       `<td>${esc(s.name)}</td><td>${esc(s.kind || "auto")}</td>` +
-      `<td><span class="badge">${s.status}</span></td>` +
+      `<td>${statusCell}</td>` +
       `<td>${(s.bytes / 1024).toFixed(1)} KB</td>` +
       `<td><button class="danger" data-id="${s.id}">Delete</button></td>`;
     tr.querySelector("button").onclick = async () => {
@@ -281,7 +284,9 @@ function renderJobs(jobs) {
   jobs.slice(0, 8).forEach((j) => {
     const li = document.createElement("li");
     const pct = Math.round((j.progress || 0) * 100);
-    li.textContent = `${j.type} — ${j.state} (${pct}%) ${j.message || j.error || ""}`;
+    const detail = j.state === "failed" ? (j.error || j.message) : (j.message || "");
+    li.textContent = `${j.type} — ${j.state} (${pct}%) ${detail || ""}`;
+    if (j.state === "failed") li.style.color = "var(--error)";
     ul.appendChild(li);
   });
 }

@@ -8,7 +8,9 @@ the handler functions stay the same; only the dispatch changes.
 
 from __future__ import annotations
 
+import logging
 import threading
+import traceback
 from typing import Callable
 
 from sqlalchemy import select
@@ -18,6 +20,8 @@ from ..config import get_settings
 from ..service import RequestContext, index_source
 from .config import ServerSettings, get_server_settings
 from .models import Job, Source
+
+log = logging.getLogger("telesearch.server.worker")
 
 JobHandler = Callable[[Session, Job, ServerSettings], None]
 _HANDLERS: dict[str, JobHandler] = {}
@@ -164,22 +168,30 @@ def run_job(
         handler = _HANDLERS.get(job.type)
         job.state = "running"
         db.commit()
+        log.info("job %s (%s) started", job_id, job.type)
         if handler is None:
             raise ValueError(f"no handler for job type {job.type!r}")
         handler(db, job, server_settings)
         job.state = "completed"
         db.commit()
+        log.info("job %s (%s) completed", job_id, job.type)
     except Exception as exc:  # record failure, don't crash the worker
+        # Full traceback to the server log (so `docker compose logs` shows the
+        # real cause), and a concise message persisted on the job/source so the
+        # UI and API surface it instead of the stale progress message.
+        detail = f"{type(exc).__name__}: {exc}".strip()
+        log.error("job %s failed:\n%s", job_id, traceback.format_exc())
         db.rollback()
         job = db.get(Job, job_id)
         if job is not None:
             job.state = "failed"
-            job.error = str(exc)[:1999]
+            job.error = detail[:1999]
+            job.message = f"failed: {detail[:180]}"
             if job.source_id:
                 src = db.get(Source, job.source_id)
                 if src is not None:
                     src.status = "failed"
-                    src.error = str(exc)[:1999]
+                    src.error = detail[:1999]
             db.commit()
     finally:
         db.close()
