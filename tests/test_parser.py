@@ -89,6 +89,22 @@ def test_parse_export_basic(tmp_path):
     assert by_id[6].mime_type == "application/pdf"
 
 
+def test_channel_post_sender_coerced_to_str(tmp_path):
+    # Real exports have channel/anonymous posts with from=null and an integer
+    # from_id (the channel id). Sender must be a string, not an int.
+    data = {
+        "name": "Maga",
+        "messages": [
+            {"id": 1, "type": "message", "date_unixtime": "1", "from": None,
+             "from_id": 900123, "text": "channel post"},
+        ],
+    }
+    (tmp_path / "result.json").write_text(json.dumps(data), encoding="utf-8")
+    msg = next(iter(parse_export(tmp_path)))
+    assert msg.sender == "900123"
+    assert isinstance(msg.sender, str)
+
+
 def test_placeholder_and_mime_routing(tmp_path):
     data = {
         "name": "Chat",

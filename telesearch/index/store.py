@@ -97,9 +97,19 @@ class VectorStore:
         payload = []
         for row, vec in zip(rows, vectors):
             r = {k: v for k, v in row.items() if k in cols}
+            # Coerce string columns to str so a non-string value from any parser
+            # (e.g. a Telegram channel post with an integer ``from_id``) can't
+            # break the Arrow conversion and fail the whole indexing job.
             for name in _STR_FIELDS:
                 if name in cols:
-                    r[name] = r.get(name) or ""
+                    v = r.get(name)
+                    r[name] = "" if v is None else str(v)
+            for name in ("message_id", "timestamp"):
+                if name in cols:
+                    try:
+                        r[name] = int(r.get(name) or 0)
+                    except (TypeError, ValueError):
+                        r[name] = 0
             r["vector"] = vec.astype(np.float32).tolist()
             payload.append(r)
         return payload
