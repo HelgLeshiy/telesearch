@@ -23,7 +23,18 @@ console = Console()
 def index(
     export: Path = typer.Argument(
         ...,
-        help="Path to the Telegram export folder (containing result.json) or the result.json file.",
+        help="Path to a source: a Telegram export (folder/result.json), a file, or a folder of files.",
+    ),
+    kind: Optional[str] = typer.Option(
+        None,
+        help="Force a parser (e.g. telegram, generic_text, generic_file). Default: auto-detect.",
+    ),
+    collection: Optional[str] = typer.Option(
+        None,
+        help="Collection id grouping this source for scoped search (default: source name).",
+    ),
+    workspace: Optional[str] = typer.Option(
+        None, help="Workspace whose index to write (default: config default_workspace)."
     ),
     images: bool = typer.Option(True, help="Caption photos with the VLM."),
     videos: bool = typer.Option(True, help="Summarize and transcribe videos."),
@@ -39,21 +50,19 @@ def index(
     resume: bool = typer.Option(True, help="Skip messages that are already indexed."),
     workers: Optional[int] = typer.Option(None, help="Concurrent media requests (default: config)."),
 ):
-    """Parse an export and build the searchable index (resumable)."""
-    from .ingest import parse_export
-    from .index.build import build_index
+    """Parse a source and build the searchable index (resumable)."""
+    from .service import RequestContext, index_source
 
     settings = get_settings()
-    export_root = export if export.is_dir() else export.parent
+    ctx = RequestContext(workspace_id=workspace or settings.default_workspace)
 
-    console.print(f"[bold]Parsing[/bold] {export}")
-    messages = list(parse_export(export))
-    console.print(f"Found [cyan]{len(messages)}[/cyan] messages. Building index...")
-
-    count = build_index(
-        messages,
-        export_root,
+    console.print(f"[bold]Indexing[/bold] {export}")
+    result = index_source(
+        export,
         settings,
+        ctx=ctx,
+        kind=kind,
+        collection_id=collection,
         do_images=images,
         do_videos=videos,
         do_audio=audio,
@@ -65,7 +74,9 @@ def index(
         workers=workers,
     )
     console.print(
-        f"[bold green]Done.[/bold green] Indexed {count} new chunks into {settings.db_path}"
+        f"[bold green]Done.[/bold green] Parser [cyan]{result.parser}[/cyan] read "
+        f"{result.messages} messages; indexed {result.chunks} new chunks into "
+        f"{result.db_path} (collection [magenta]{result.collection_id}[/magenta])"
     )
 
 
@@ -73,7 +84,16 @@ def index(
 def reindex_text(
     export: Path = typer.Argument(
         ...,
-        help="Path to the Telegram export folder (containing result.json) or the result.json file.",
+        help="Path to the source (Telegram export folder/result.json, file, or folder).",
+    ),
+    kind: Optional[str] = typer.Option(
+        None, help="Force a parser (default: auto-detect)."
+    ),
+    collection: Optional[str] = typer.Option(
+        None, help="Collection id (default: source name)."
+    ),
+    workspace: Optional[str] = typer.Option(
+        None, help="Workspace whose index to write (default: config default_workspace)."
     ),
     conversation_windows: bool = typer.Option(
         True,
@@ -88,27 +108,39 @@ def reindex_text(
     re-caption every photo/video and re-transcribe all audio). Media chunks are
     left untouched. Safe to run with ``--no-deps``.
     """
-    from .ingest import parse_export
-    from .index.build import reindex_text as _reindex_text
+    from .service import RequestContext, reindex_source_text
 
     settings = get_settings()
-    export_root = export if export.is_dir() else export.parent
+    ctx = RequestContext(workspace_id=workspace or settings.default_workspace)
 
-    console.print(f"[bold]Parsing[/bold] {export}")
-    messages = list(parse_export(export))
-    console.print(
-        f"Found [cyan]{len(messages)}[/cyan] messages. Refreshing text + conversation chunks..."
-    )
-
-    count = _reindex_text(
-        messages,
-        export_root,
+    console.print(f"[bold]Refreshing text + conversation chunks for[/bold] {export}")
+    result = reindex_source_text(
+        export,
         settings,
+        ctx=ctx,
+        kind=kind,
+        collection_id=collection,
         do_conversation_windows=conversation_windows,
     )
     console.print(
-        f"[bold green]Done.[/bold green] Wrote {count} text/conversation chunks into {settings.db_path}"
+        f"[bold green]Done.[/bold green] Wrote {result.chunks} text/conversation "
+        f"chunks into {result.db_path}"
     )
+
+
+def _parse_date(value: Optional[str]) -> Optional[int]:
+    """Parse a YYYY-MM-DD (or ISO) date string into a unix timestamp."""
+    if not value:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise typer.BadParameter(f"invalid date {value!r} (use YYYY-MM-DD)") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
 
 
 @app.command()
@@ -119,16 +151,43 @@ def search(
         None,
         help="Filter by type: text, conversation, image, video, audio, ocr, document.",
     ),
+    collection: Optional[list[str]] = typer.Option(
+        None, "--collection", help="Restrict to / combine these collection ids (repeatable)."
+    ),
+    sender: Optional[list[str]] = typer.Option(
+        None, "--sender", help="Restrict to these senders (repeatable)."
+    ),
+    source_kind: Optional[list[str]] = typer.Option(
+        None, "--source-kind", help="Restrict to these source kinds, e.g. telegram (repeatable)."
+    ),
+    since: Optional[str] = typer.Option(None, help="Only results on/after this date (YYYY-MM-DD)."),
+    until: Optional[str] = typer.Option(None, help="Only results on/before this date (YYYY-MM-DD)."),
+    workspace: Optional[str] = typer.Option(
+        None, help="Workspace to search (default: config default_workspace)."
+    ),
     rerank: Optional[bool] = typer.Option(
         None, "--rerank/--no-rerank", help="Cross-encoder rerank (default: config)."
     ),
 ):
-    """Hybrid (semantic + keyword) search, then cross-encoder rerank."""
-    from .search import Retriever
+    """Hybrid (semantic + keyword) search with filters, then cross-encoder rerank."""
+    from .service import RequestContext, SearchQuery, SearchService
 
     settings = get_settings()
-    retriever = Retriever(settings)
-    results = retriever.search(query, k=k, modality=modality, rerank=rerank)
+    ctx = RequestContext(workspace_id=workspace or settings.default_workspace)
+    service = SearchService(settings, ctx)
+    results = service.search(
+        SearchQuery(
+            text=query,
+            k=k,
+            modalities=[modality] if modality else None,
+            collections=list(collection) if collection else None,
+            senders=list(sender) if sender else None,
+            source_kinds=list(source_kind) if source_kind else None,
+            date_from=_parse_date(since),
+            date_to=_parse_date(until),
+            rerank=rerank,
+        )
+    )
 
     if not results:
         console.print("[yellow]No results.[/yellow]")
@@ -160,14 +219,17 @@ def ask(
         None,
         help="Messages of surrounding context to include on each side of a hit (default: config).",
     ),
+    workspace: Optional[str] = typer.Option(
+        None, help="Workspace to query (default: config default_workspace)."
+    ),
 ):
     """Ask a question and get an answer grounded in the conversation (RAG)."""
-    from .search import answer_question
+    from .service import RequestContext, SearchService
 
     settings = get_settings()
-    answer, sources = answer_question(
-        question, settings, k=k, use_hyde=hyde, neighbors=neighbors
-    )
+    ctx = RequestContext(workspace_id=workspace or settings.default_workspace)
+    service = SearchService(settings, ctx)
+    answer, sources = service.ask(question, k=k, use_hyde=hyde, neighbors=neighbors)
 
     console.print(Panel(answer, title="Answer", border_style="green"))
     if sources:
@@ -183,12 +245,14 @@ def info():
     """Show current configuration and index status."""
     from .index.store import VectorStore, TABLE_NAME
     from .index.embeddings import TextEmbedder
+    from .ingest import available as available_parsers
 
     settings = get_settings()
     table = Table(title="telesearch configuration")
     table.add_column("setting", style="cyan")
     table.add_column("value")
     table.add_row("data_dir", str(settings.data_dir))
+    table.add_row("parsers", ", ".join(available_parsers()))
     table.add_row("text_embed_model (search)", settings.text_embed_model)
     table.add_row("reranker_model", settings.reranker_model)
     table.add_row("use_reranker", str(settings.use_reranker))

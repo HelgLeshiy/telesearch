@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from ..config import Settings
@@ -39,10 +40,10 @@ class SearchResult:
 
 
 class Retriever:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, db_path: str | Path | None = None):
         self.settings = settings
         self.embedder = TextEmbedder(settings)
-        self.store = VectorStore(settings.db_path, self.embedder.dim)
+        self.store = VectorStore(db_path or settings.db_path, self.embedder.dim)
         self._reranker = Reranker(settings) if settings.use_reranker else None
 
     def search(
@@ -52,15 +53,17 @@ class Retriever:
         modality: Optional[str] = None,
         rerank: Optional[bool] = None,
         rerank_query: Optional[str] = None,
+        where: Optional[str] = None,
     ) -> list[SearchResult]:
         """Hybrid retrieve, then (optionally) cross-encoder rerank.
 
-        Pipeline: bge-m3 dense + BM25 -> RRF candidates -> modality filter ->
-        bge-reranker-v2-m3 -> top ``k``.
+        Pipeline: bge-m3 dense + BM25 -> (prefilter ``where``) -> RRF candidates
+        -> modality filter -> bge-reranker-v2-m3 -> top ``k``.
 
-        ``rerank_query`` lets the caller retrieve candidates with one query
-        (e.g. a HyDE-expanded one for better recall) but rerank them against a
-        different, sharper query (e.g. the user's original question).
+        ``where`` is a structured LanceDB prefilter (date range, source,
+        collection, ...) applied during retrieval. ``rerank_query`` lets the
+        caller retrieve candidates with one query (e.g. a HyDE-expanded one for
+        better recall) but rerank them against a different, sharper query.
         """
         use_rerank = self.settings.use_reranker if rerank is None else rerank
         rerank_query = rerank_query or query
@@ -68,7 +71,7 @@ class Retriever:
         query_vec = self.embedder.encode([query], is_query=True)[0]
         # Over-fetch a generous candidate pool for the reranker to sift.
         candidates = self.settings.rerank_candidates if use_rerank else max(k * 4, k)
-        rows = self.store.hybrid_search(query, query_vec, k=candidates)
+        rows = self.store.hybrid_search(query, query_vec, k=candidates, where=where)
         results = [SearchResult.from_row(r) for r in rows]
 
         if modality:
