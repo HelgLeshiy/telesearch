@@ -79,8 +79,24 @@ async function boot() {
   $("user-bar").classList.remove("hidden");
   await loadWorkspaces();
   await refresh();
+  await loadGuides();
+  await loadPresets();
   if (jobsTimer) clearInterval(jobsTimer);
   jobsTimer = setInterval(refresh, 3000);
+}
+
+async function loadGuides() {
+  try {
+    const guides = await api("/guides");
+    $("guides").innerHTML = guides
+      .map(
+        (g) =>
+          `<div class="guide"><h4>${esc(g.title)}</h4><ol>` +
+          g.steps.map((s) => `<li>${esc(s)}</li>`).join("") +
+          `</ol></div>`
+      )
+      .join("");
+  } catch (e) {}
 }
 
 async function loadWorkspaces() {
@@ -159,22 +175,74 @@ function renderJobs(jobs) {
 }
 
 // ---- Search ----
-$("search-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  if (!workspaceId) return;
+function currentSearchBody() {
   const body = { query: $("q").value, k: 10 };
   const mod = $("f-modality").value.trim();
   if (mod) body.modalities = [mod];
+  const kind = $("f-kind").value.trim();
+  if (kind) body.source_kinds = [kind];
   const since = $("f-since").value, until = $("f-until").value;
   if (since) body.date_from = Math.floor(new Date(since).getTime() / 1000);
   if (until) body.date_to = Math.floor(new Date(until).getTime() / 1000);
+  return body;
+}
+
+$("search-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = currentSearchBody();
+  const global = $("global-toggle").checked;
+  if (!global && !workspaceId) return;
   $("results").innerHTML = "<p class='muted'>Searching...</p>";
   try {
-    const hits = await api(`/workspaces/${workspaceId}/search`, { method: "POST", body });
+    const path = global ? "/search" : `/workspaces/${workspaceId}/search`;
+    const hits = await api(path, { method: "POST", body });
     renderResults(hits);
   } catch (err) {
     $("results").innerHTML = `<p class='error'>${esc(err.message)}</p>`;
   }
+});
+
+// ---- Presets ----
+async function loadPresets() {
+  try {
+    const presets = await api("/presets");
+    const sel = $("preset-select");
+    sel.innerHTML = '<option value="">— saved searches —</option>';
+    presets.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = p.name;
+      o.dataset.params = JSON.stringify(p.params || {});
+      sel.appendChild(o);
+    });
+  } catch (e) {}
+}
+
+$("preset-select").addEventListener("change", (e) => {
+  const opt = e.target.selectedOptions[0];
+  if (!opt || !opt.dataset.params) return;
+  const p = JSON.parse(opt.dataset.params);
+  $("q").value = p.query || "";
+  $("f-modality").value = (p.modalities || [])[0] || "";
+  $("f-kind").value = (p.source_kinds || [])[0] || "";
+  $("global-toggle").checked = !!p.global;
+});
+
+$("preset-save").addEventListener("click", async () => {
+  const name = $("preset-name").value.trim();
+  if (!name) return;
+  const params = currentSearchBody();
+  params.global = $("global-toggle").checked;
+  await api("/presets", { method: "POST", body: { name, params } });
+  $("preset-name").value = "";
+  loadPresets();
+});
+
+$("preset-delete").addEventListener("click", async () => {
+  const id = $("preset-select").value;
+  if (!id) return;
+  await api(`/presets/${id}`, { method: "DELETE" });
+  loadPresets();
 });
 
 function renderResults(hits) {

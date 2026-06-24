@@ -63,10 +63,23 @@
             <input id="f-since" type="date" title="from date" />
             <input id="f-until" type="date" title="to date" />
             <input id="f-modality" type="text" placeholder="modality (e.g. text)" />
+            <input id="f-kind" type="text" placeholder="source kind (e.g. telegram)" />
           </div>
+          <label class="check"><input id="global-toggle" type="checkbox" /> combine all my contexts (search across every workspace &amp; shared source)</label>
           <button type="submit">Search</button>
         </form>
+        <div class="preset-bar">
+          <select id="preset-select"><option value="">— saved searches —</option></select>
+          <input id="preset-name" type="text" placeholder="name to save current search" />
+          <button id="preset-save" type="button">Save</button>
+          <button id="preset-delete" type="button" class="danger">Delete</button>
+        </div>
         <div id="results"></div>
+      </section>
+
+      <section class="card">
+        <h2>How to export your data</h2>
+        <div id="guides"></div>
       </section>
     </div>
   </main>
