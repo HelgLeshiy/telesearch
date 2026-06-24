@@ -51,6 +51,10 @@ class ServerSettings(BaseSettings):
     # off by default because it needs a GPU; the cheap text path runs anywhere.
     index_media_by_default: bool = False
 
+    # Upload quotas / limits (design §5.4, §8). 0 disables a limit.
+    max_upload_bytes: int = 512 * 1024 * 1024  # 512 MB per upload
+    max_sources_per_workspace: int = 100
+
     @property
     def resolved_database_url(self) -> str:
         if self.database_url:

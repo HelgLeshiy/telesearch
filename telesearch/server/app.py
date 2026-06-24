@@ -15,6 +15,7 @@ from .queue import Worker
 from .routers import (
     auth,
     global_search,
+    graph,
     guides,
     jobs,
     presets,
@@ -74,6 +75,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     app.include_router(jobs.router, prefix="/api")
     app.include_router(search.router, prefix="/api")
     app.include_router(global_search.router, prefix="/api")
+    app.include_router(graph.router, prefix="/api")
     app.include_router(presets.router, prefix="/api")
     app.include_router(guides.router, prefix="/api")
 

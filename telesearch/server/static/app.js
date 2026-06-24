@@ -81,9 +81,108 @@ async function boot() {
   await refresh();
   await loadGuides();
   await loadPresets();
+  await loadGraph();
   if (jobsTimer) clearInterval(jobsTimer);
   jobsTimer = setInterval(refresh, 3000);
 }
+
+// ---- Knowledge graph ----
+let graphData = { nodes: [], edges: [] };
+
+async function loadGraph() {
+  if (!workspaceId) return;
+  try {
+    graphData = await api(`/workspaces/${workspaceId}/graph`);
+    drawGraph();
+    const n = (graphData.meta && graphData.meta.n_topics) || 0;
+    $("graph-status").textContent = n
+      ? `${n} topics across ${graphData.meta.n_chunks} chunks. Click a node to explore.`
+      : "No graph yet — index some sources, then Rebuild graph.";
+  } catch (e) {}
+}
+
+function _palette(i) {
+  const colors = ["#5b8cff", "#ff8c5b", "#5bffa0", "#d65bff", "#ffd65b", "#5bd6ff", "#ff5b8c"];
+  return colors[i % colors.length];
+}
+
+function drawGraph() {
+  const cv = $("graph-canvas");
+  const ctx = cv.getContext("2d");
+  const W = (cv.width = cv.clientWidth), H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  const nodes = graphData.nodes || [];
+  if (!nodes.length) return;
+  const pad = 50;
+  const sx = (x) => pad + ((x + 1) / 2) * (W - 2 * pad);
+  const sy = (y) => pad + ((y + 1) / 2) * (H - 2 * pad);
+  const maxSize = Math.max(...nodes.map((n) => n.size), 1);
+  const radius = (n) => 8 + 26 * Math.sqrt(n.size / maxSize);
+  const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
+
+  (graphData.edges || []).forEach((e) => {
+    const a = byId[e.source], b = byId[e.target];
+    if (!a || !b) return;
+    ctx.beginPath();
+    ctx.moveTo(sx(a.x), sy(a.y));
+    ctx.lineTo(sx(b.x), sy(b.y));
+    ctx.strokeStyle = `rgba(150,160,180,${0.15 + 0.5 * (e.weight || 0)})`;
+    ctx.lineWidth = 1 + 2 * (e.weight || 0);
+    ctx.stroke();
+  });
+
+  nodes.forEach((n, i) => {
+    const r = radius(n), x = sx(n.x), y = sy(n.y);
+    n._sx = x; n._sy = y; n._r = r;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.fillStyle = _palette(i);
+    ctx.globalAlpha = 0.85;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#e7e9ee";
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText((n.label || "").slice(0, 24), x, y + r + 13);
+  });
+}
+
+$("graph-canvas").addEventListener("click", (e) => {
+  const cv = $("graph-canvas");
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const hit = (graphData.nodes || []).find(
+    (n) => Math.hypot(n._sx - mx, n._sy - my) <= (n._r || 0)
+  );
+  if (hit) showTopic(hit);
+});
+
+function showTopic(node) {
+  const p = $("topic-panel");
+  p.classList.remove("hidden");
+  p.innerHTML =
+    `<h4>${esc(node.label)}</h4>` +
+    `<div class="muted">${node.size} chunks · keywords: ${esc((node.keywords || []).join(", "))}</div>` +
+    (node.sample_contents || [])
+      .map((s) => `<div class="sample">${esc(s)}</div>`)
+      .join("");
+}
+
+$("graph-refresh").addEventListener("click", async () => {
+  if (!workspaceId) return;
+  $("graph-status").textContent = "Rebuilding graph...";
+  try {
+    await api(`/workspaces/${workspaceId}/graph/refresh`, { method: "POST" });
+    let tries = 0;
+    const poll = setInterval(async () => {
+      tries++;
+      await loadGraph();
+      if ((graphData.nodes || []).length || tries > 20) clearInterval(poll);
+    }, 1500);
+  } catch (err) {
+    $("graph-status").textContent = "Error: " + err.message;
+  }
+});
 
 async function loadGuides() {
   try {
@@ -110,8 +209,21 @@ async function loadWorkspaces() {
     sel.appendChild(o);
   });
   workspaceId = wss.length ? wss[0].id : "";
-  sel.onchange = () => { workspaceId = sel.value; refresh(); };
+  sel.onchange = () => { workspaceId = sel.value; refresh(); loadGraph(); };
 }
+
+$("delete-ws").addEventListener("click", async () => {
+  if (!workspaceId) return;
+  if (!confirm("Permanently delete this workspace and ALL its data?")) return;
+  try {
+    await api(`/workspaces/${workspaceId}`, { method: "DELETE" });
+    await loadWorkspaces();
+    await refresh();
+    await loadGraph();
+  } catch (err) {
+    alert("Delete failed: " + err.message);
+  }
+});
 
 // ---- Sources + jobs ----
 $("upload-form").addEventListener("submit", async (e) => {
