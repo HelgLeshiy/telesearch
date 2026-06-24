@@ -18,9 +18,12 @@ from .routers import (
     graph,
     guides,
     jobs,
+    metrics,
+    oidc,
     presets,
     search,
     sources,
+    uploads,
     workspaces,
 )
 
@@ -70,14 +73,17 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(auth.router, prefix="/api")
+    app.include_router(oidc.router, prefix="/api")
     app.include_router(workspaces.router, prefix="/api")
     app.include_router(sources.router, prefix="/api")
+    app.include_router(uploads.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
     app.include_router(search.router, prefix="/api")
     app.include_router(global_search.router, prefix="/api")
     app.include_router(graph.router, prefix="/api")
     app.include_router(presets.router, prefix="/api")
     app.include_router(guides.router, prefix="/api")
+    app.include_router(metrics.router, prefix="/api")
 
     if _STATIC_DIR.exists():
         app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="ui")
