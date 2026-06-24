@@ -109,3 +109,12 @@ class PresetOut(BaseModel):
     name: str
     params: dict
     created_at: datetime
+
+
+class AuditOut(BaseModel):
+    id: str
+    action: str
+    user_id: Optional[str]
+    workspace_id: Optional[str]
+    resource: str
+    ts: datetime
