@@ -397,5 +397,40 @@ docker compose run --rm --no-deps telesearch reindex-text /export
 - Privacy: all models are open-weight and run locally; the OpenAI client only
   talks to *your* local server.
 
+## Multi-user service (optional)
+
+Beyond the single-user CLI, telesearch ships an optional multi-user HTTP service
+(`pip install 'telesearch[server]'`, then `telesearch serve`). It turns the
+engine into a small self-hostable SaaS with portable defaults (SQLite + local
+blob storage + an in-process worker) and pluggable production backends.
+
+Features:
+
+- **Auth & workspaces** — password login + signed session tokens, or **OIDC**
+  SSO (`TELESEARCH_OIDC_*`). Per-user workspaces with **physical data isolation**
+  and source **sharing**.
+- **Uploads & background indexing** — multipart or **presigned** uploads, indexed
+  by a background job worker. Any file / Telegram / WhatsApp / JSON chat export
+  is auto-detected and indexed; media (GPU) is opt-in, text (CPU) is the default.
+- **Search** — workspace-scoped and **global cross-context** search (fuse several
+  workspaces + shared sources), with date/modality/sender/source filters and
+  saved presets.
+- **Knowledge graph** — a topic graph (clustering + keywords + 2D layout) on the
+  home screen, rebuilt in the background. An experimental fact graph (G3,
+  GraphRAG) is available behind `TELESEARCH_GRAPH_G3_ENABLED` (needs an LLM).
+- **Operations** — Alembic migrations, `/api/metrics` (Prometheus text), SSE job
+  progress (`/jobs/{id}/events`), audit log, upload/job **quotas**, **cpu/gpu job
+  lanes** with priority, optional **at-rest blob encryption** and an **S3** blob
+  backend.
+
+Key settings (all `TELESEARCH_*`): `DATABASE_URL` (Postgres for prod), `SECRET_KEY`,
+`BLOB_BACKEND` (`local`/`s3`), `BLOB_ENCRYPTION_KEY`, `WORKER_LANES`,
+`MAX_UPLOAD_BYTES`, `OIDC_ENABLED`, `GRAPH_G3_ENABLED`. For production, run schema
+migrations with Alembic (`alembic upgrade head`) instead of the dev auto-create.
+
+Optional extras: `telesearch[s3]` (boto3), `telesearch[encryption]` (cryptography),
+`telesearch[redis]` (Redis — the worker is the seam to swap the in-process queue
+for Redis + Celery/Arq).
+
 ## License
 MIT
