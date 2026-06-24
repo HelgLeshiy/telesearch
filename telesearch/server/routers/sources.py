@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...config import get_settings
+from .. import audit
 from ..blobs import get_blob_store
 from ..config import ServerSettings, get_server_settings
 from ..db import get_db
@@ -34,6 +35,7 @@ def _to_out(s: Source) -> SourceOut:
 
 @router.post("", response_model=SourceOut)
 def upload_source(
+    request: Request,
     file: UploadFile = File(...),
     kind: str = Form(""),
     name: str = Form(""),
@@ -43,6 +45,17 @@ def upload_source(
     settings: ServerSettings = Depends(get_server_settings),
 ) -> SourceOut:
     scope.require("member")
+
+    # Quota: cap the number of sources per workspace.
+    if settings.max_sources_per_workspace:
+        existing = db.scalar(
+            select(func.count(Source.id)).where(Source.workspace_id == scope.workspace.id)
+        )
+        if existing >= settings.max_sources_per_workspace:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"source quota reached ({settings.max_sources_per_workspace})",
+            )
 
     source = Source(
         workspace_id=scope.workspace.id,
@@ -57,9 +70,18 @@ def upload_source(
     source.collection_id = source.id
     source.blob_key = f"{scope.workspace.id}/{source.id}"
 
-    written = get_blob_store(settings).save(
-        source.blob_key, file.filename or "upload", file.file
-    )
+    store = get_blob_store(settings)
+    written = store.save(source.blob_key, file.filename or "upload", file.file)
+
+    # Quota: reject oversized uploads (clean up what we wrote).
+    if settings.max_upload_bytes and written > settings.max_upload_bytes:
+        store.delete(source.blob_key)
+        db.delete(source)
+        db.commit()
+        raise HTTPException(
+            413, f"upload exceeds limit ({settings.max_upload_bytes} bytes)"
+        )
+
     source.bytes = written
     db.commit()
     db.refresh(source)
@@ -70,6 +92,11 @@ def upload_source(
         job_type="ingest",
         source_id=source.id,
         params={"index_media": bool(index_media)},
+    )
+    audit.record(
+        db, action="source.upload", user_id=scope.user.id,
+        workspace_id=scope.workspace.id, resource=source.id,
+        ip=request.client.host if request.client else "",
     )
     return _to_out(source)
 
@@ -114,6 +141,10 @@ def delete_source(
     ).delete()
     db.delete(source)
     db.commit()
+    audit.record(
+        db, action="source.delete", user_id=scope.user.id,
+        workspace_id=scope.workspace.id, resource=source_id,
+    )
 
 
 @router.post("/{source_id}/share", status_code=status.HTTP_204_NO_CONTENT)
@@ -150,3 +181,7 @@ def share_source(
             )
         )
         db.commit()
+    audit.record(
+        db, action="source.share", user_id=scope.user.id,
+        workspace_id=scope.workspace.id, resource=f"{source.id}->{target.id}",
+    )
