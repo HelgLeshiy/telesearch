@@ -40,9 +40,14 @@ def _message_to_chunks(
     doc_chunk_overlap: int = 150,
     doc_max_chars: int = 400_000,
     reply_lookup: Optional[dict[int, Message]] = None,
+    collection_id: str = "",
 ) -> list[Chunk]:
     """Turn one message into one or more searchable chunks."""
     chunks: list[Chunk] = []
+    # Namespace chunk ids by collection so multiple sources in one workspace
+    # (overlapping message-id spaces) don't collide on chunk_id. Empty collection
+    # (the legacy single-index CLI case) keeps the original "id:modality" form.
+    cid_prefix = f"{collection_id}:" if collection_id else ""
 
     def base(
         modality: str,
@@ -52,7 +57,7 @@ def _message_to_chunks(
         suffix: str = "",
     ) -> Chunk:
         return Chunk(
-            chunk_id=f"{msg.id}:{modality}{suffix}",
+            chunk_id=f"{cid_prefix}{msg.id}:{modality}{suffix}",
             message_id=msg.id,
             chat=msg.chat,
             sender=msg.sender,
@@ -62,6 +67,9 @@ def _message_to_chunks(
             content=content.strip(),
             media_path=media_path,
             extra=extra or {},
+            collection_id=collection_id,
+            source_kind=msg.source_kind,
+            doc_id=msg.external_id or msg.chat or "",
         )
 
     if msg.text.strip():
@@ -235,6 +243,7 @@ def _build_conversation_chunks(
     window_size: int,
     stride: int,
     max_gap: int,
+    collection_id: str = "",
 ) -> list[Chunk]:
     """Group consecutive messages into overlapping conversation-window chunks.
 
@@ -268,6 +277,7 @@ def _build_conversation_chunks(
 
     chunks: list[Chunk] = []
     seen_cids: set[str] = set()
+    cid_prefix = f"{collection_id}:" if collection_id else ""
     for session in sessions:
         n = len(session)
         for start in range(0, n, stride):
@@ -278,7 +288,7 @@ def _build_conversation_chunks(
             if len(lines) < 2:
                 continue
             first = window[0]
-            cid = f"{first.id}:conversation"
+            cid = f"{cid_prefix}{first.id}:conversation"
             if cid in seen_cids:
                 continue
             seen_cids.add(cid)
@@ -299,6 +309,9 @@ def _build_conversation_chunks(
                         "start_id": ids[0],
                         "end_id": ids[-1],
                     },
+                    collection_id=collection_id,
+                    source_kind=first.source_kind,
+                    doc_id=first.external_id or first.chat or "",
                 )
             )
             if start + window_size >= n:
@@ -425,6 +438,8 @@ def build_index(
     rebuild: bool = False,
     workers: int | None = None,
     embed_batch: int | None = None,
+    db_path: str | Path | None = None,
+    collection_id: str = "",
 ) -> int:
     """Build the LanceDB index from parsed messages. Returns new chunk count.
 
@@ -468,7 +483,7 @@ def build_index(
             )
 
     embedder = TextEmbedder(settings)
-    store = VectorStore(settings.db_path, embedder.dim)
+    store = VectorStore(db_path or settings.db_path, embedder.dim)
     # Surface the effective embedding memory knobs so a stale image (built before
     # these were added) is obvious: if you don't see this line, rebuild the image.
     tqdm.write(
@@ -485,7 +500,7 @@ def build_index(
         store.drop()
         seen: set[int] = set()
     else:
-        seen = store.existing_message_ids() if resume else set()
+        seen = store.existing_message_ids(collection_id or None) if resume else set()
 
     messages = [m for m in all_messages if m.id not in seen]
     if seen:
@@ -514,6 +529,7 @@ def build_index(
                 doc_chunk_overlap=settings.doc_chunk_overlap,
                 doc_max_chars=settings.doc_max_chars,
                 reply_lookup=reply_lookup,
+                collection_id=collection_id,
             )
         finally:
             inflight.pop(msg.id, None)
@@ -554,6 +570,7 @@ def build_index(
             window_size=settings.conversation_window_size,
             stride=settings.conversation_window_stride,
             max_gap=settings.conversation_window_max_gap,
+            collection_id=collection_id,
         )
         if conv_chunks:
             tqdm.write(
@@ -578,6 +595,8 @@ def reindex_text(
     settings: Settings,
     *,
     do_conversation_windows: bool = True,
+    db_path: str | Path | None = None,
+    collection_id: str = "",
 ) -> int:
     """Refresh only the *text-derived* chunks over an existing index.
 
@@ -593,10 +612,10 @@ def reindex_text(
     reply_lookup = {m.id: m for m in all_messages}
 
     embedder = TextEmbedder(settings)
-    store = VectorStore(settings.db_path, embedder.dim)
+    store = VectorStore(db_path or settings.db_path, embedder.dim)
     embed_batch = settings.embed_batch_size
 
-    removed = store.delete_modalities(["text", "conversation"])
+    removed = store.delete_modalities(["text", "conversation"], collection_id or None)
     tqdm.write(f"[reindex-text] removed {removed} existing text/conversation chunks")
 
     # Text-only pass: captioner/transcriber/documents disabled, so only the
@@ -613,6 +632,7 @@ def reindex_text(
                 do_ocr=False,
                 do_documents=False,
                 reply_lookup=reply_lookup,
+                collection_id=collection_id,
             )
         )
 
@@ -622,6 +642,7 @@ def reindex_text(
             window_size=settings.conversation_window_size,
             stride=settings.conversation_window_stride,
             max_gap=settings.conversation_window_max_gap,
+            collection_id=collection_id,
         )
         chunks.extend(conv_chunks)
         tqdm.write(

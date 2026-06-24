@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     # guards against decompression-bomb images that can hang or exhaust memory.
     max_image_megapixels: float = 50.0
 
+    # Workspace used by the CLI and any caller that doesn't specify one. Its
+    # index lives at the historical ``db_path`` so existing single-user indexes
+    # keep working unchanged.
+    default_workspace: str = "default"
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "lancedb"
@@ -115,6 +120,19 @@ class Settings(BaseSettings):
     @property
     def media_cache_dir(self) -> Path:
         return self.data_dir / "media_cache"
+
+    def workspace_db_path(self, workspace_id: str | None = None) -> Path:
+        """Return the LanceDB path for a workspace (physical data isolation).
+
+        The default workspace maps to the legacy ``db_path`` for backward
+        compatibility; every other workspace gets its own directory so tenants'
+        vectors are physically separated, not merely filtered.
+        """
+        workspace_id = workspace_id or self.default_workspace
+        if workspace_id == self.default_workspace:
+            return self.db_path
+        safe = workspace_id.replace("/", "_").replace("..", "_")
+        return self.data_dir / "workspaces" / safe / "lancedb"
 
 
 _settings: Settings | None = None

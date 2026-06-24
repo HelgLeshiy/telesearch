@@ -18,22 +18,51 @@ import pyarrow as pa
 TABLE_NAME = "chunks"
 
 
+# String columns carried on every chunk. The trailing block (collection_id …
+# lang) was added for multi-tenant / multi-source indexing and search-time
+# filtering; older indexes built before this simply don't have them and are read
+# back transparently (missing values default to "").
+_STR_FIELDS = (
+    "chunk_id",
+    "chat",
+    "sender",
+    "date_str",
+    "modality",
+    "content",
+    "media_path",
+    "extra",
+    "collection_id",
+    "source_kind",
+    "doc_id",
+    "lang",
+)
+
+
 def _schema(dim: int) -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("chunk_id", pa.string()),
-            pa.field("message_id", pa.int64()),
-            pa.field("chat", pa.string()),
-            pa.field("sender", pa.string()),
-            pa.field("timestamp", pa.int64()),
-            pa.field("date_str", pa.string()),
-            pa.field("modality", pa.string()),
-            pa.field("content", pa.string()),
-            pa.field("media_path", pa.string()),
-            pa.field("extra", pa.string()),
-            pa.field("vector", pa.list_(pa.float32(), dim)),
-        ]
-    )
+    fields = [pa.field("message_id", pa.int64()), pa.field("timestamp", pa.int64())]
+    fields += [pa.field(name, pa.string()) for name in _STR_FIELDS]
+    fields.append(pa.field("vector", pa.list_(pa.float32(), dim)))
+    return pa.schema(fields)
+
+
+def _table_names(db) -> list[str]:
+    """Return existing table names as a plain ``list[str]`` across LanceDB versions.
+
+    Newer LanceDB returns a ``ListTablesResponse`` from ``list_tables()`` whose
+    membership test never matches (iterating it yields ``(key, value)`` tuples),
+    so we read its ``.tables`` attribute. We prefer ``list_tables()`` because
+    ``table_names()`` is deprecated, falling back to it on very old versions.
+    """
+    resp = db.list_tables()
+    tables = getattr(resp, "tables", None)
+    if tables is not None:
+        return list(tables)
+    if isinstance(resp, (list, tuple)):
+        return list(resp)
+    try:  # pragma: no cover - very old LanceDB
+        return list(db.table_names())
+    except AttributeError:  # pragma: no cover
+        return list(resp)
 
 
 class VectorStore:
@@ -42,22 +71,35 @@ class VectorStore:
         self.db_path.mkdir(parents=True, exist_ok=True)
         self.dim = dim
         self.db = lancedb.connect(str(self.db_path))
-        if TABLE_NAME in self.db.list_tables().tables:
+        if TABLE_NAME in _table_names(self.db):
             self.table = self.db.open_table(TABLE_NAME)
         else:
             self.table = self.db.create_table(TABLE_NAME, schema=_schema(dim))
+
+    def _coerce_rows(self, rows: list[dict[str, Any]], vectors: np.ndarray) -> list[dict]:
+        """Align rows to the table's actual schema before inserting.
+
+        This keeps inserts working against both fresh indexes (full schema) and
+        pre-existing indexes created before the multi-tenant columns were added:
+        unknown columns are dropped and missing string columns are filled with
+        ``""`` so the payload always matches the table on disk.
+        """
+        cols = set(self.table.schema.names)
+        payload = []
+        for row, vec in zip(rows, vectors):
+            r = {k: v for k, v in row.items() if k in cols}
+            for name in _STR_FIELDS:
+                if name in cols:
+                    r[name] = r.get(name) or ""
+            r["vector"] = vec.astype(np.float32).tolist()
+            payload.append(r)
+        return payload
 
     def add(self, rows: list[dict[str, Any]], vectors: np.ndarray) -> None:
         """Append rows with their (already L2-normalized) vectors."""
         if not rows:
             return
-        payload = []
-        for row, vec in zip(rows, vectors):
-            r = dict(row)
-            r["media_path"] = r.get("media_path") or ""
-            r["vector"] = vec.astype(np.float32).tolist()
-            payload.append(r)
-        self.table.add(payload)
+        self.table.add(self._coerce_rows(rows, vectors))
 
     def build_fts(self) -> None:
         """(Re)build the BM25 full-text index over the content column."""
@@ -66,13 +108,23 @@ class VectorStore:
     def count(self) -> int:
         return self.table.count_rows()
 
-    def existing_message_ids(self) -> set[int]:
-        """Return the set of message ids already present (for resumable builds)."""
+    def existing_message_ids(self, collection_id: str | None = None) -> set[int]:
+        """Return message ids already present (for resumable builds).
+
+        When ``collection_id`` is given, resume is scoped to that collection so
+        multiple sources sharing one workspace (and thus overlapping message-id
+        spaces) don't shadow each other. On indexes created before the
+        ``collection_id`` column existed, the filter is ignored (all ids).
+        """
         if self.count() == 0:
             return set()
         try:
-            ids = self.table.to_arrow().column("message_id").to_pylist()
-            return set(ids)
+            tbl = self.table.to_arrow()
+            if collection_id is not None and "collection_id" in tbl.schema.names:
+                import pyarrow.compute as pc
+
+                tbl = tbl.filter(pc.equal(tbl.column("collection_id"), collection_id))
+            return set(tbl.column("message_id").to_pylist())
         except Exception:
             return set()
 
@@ -82,34 +134,47 @@ class VectorStore:
             TABLE_NAME, schema=_schema(self.dim), mode="overwrite"
         )
 
-    def delete_modalities(self, modalities: list[str] | tuple[str, ...]) -> int:
+    def delete_modalities(
+        self,
+        modalities: list[str] | tuple[str, ...],
+        collection_id: str | None = None,
+    ) -> int:
         """Delete all chunks of the given modalities; return rows removed.
 
         Used by the text-only reindex to refresh just the text-derived chunks
         (``text`` + ``conversation``) without touching the expensive media
-        chunks (captions, transcripts, OCR, documents).
+        chunks (captions, transcripts, OCR, documents). When ``collection_id``
+        is given the delete is scoped to that collection so refreshing one
+        source doesn't wipe sibling sources in the same workspace.
         """
         if not modalities:
             return 0
         before = self.count()
         mods = ", ".join(f"'{m}'" for m in modalities)
-        self.table.delete(f"modality IN ({mods})")
+        where = f"modality IN ({mods})"
+        if collection_id is not None:
+            safe = collection_id.replace("'", "''")
+            where += f" AND collection_id = '{safe}'"
+        self.table.delete(where)
         return before - self.count()
 
-    def _vector_search(self, query_vec: np.ndarray, k: int) -> list[dict]:
-        return (
-            self.table.search(query_vec.astype(np.float32))
-            .limit(k)
-            .to_list()
-        )
-
-    def _fts_search(self, query_text: str, k: int) -> list[dict]:
+    def _apply_where(self, search, where: str | None):
+        """Attach a (pre)filter to a LanceDB search across versions."""
+        if not where:
+            return search
         try:
-            return (
-                self.table.search(query_text, query_type="fts")
-                .limit(k)
-                .to_list()
-            )
+            return search.where(where, prefilter=True)
+        except TypeError:  # pragma: no cover - older LanceDB without prefilter kw
+            return search.where(where)
+
+    def _vector_search(self, query_vec: np.ndarray, k: int, where: str | None = None) -> list[dict]:
+        search = self.table.search(query_vec.astype(np.float32))
+        return self._apply_where(search, where).limit(k).to_list()
+
+    def _fts_search(self, query_text: str, k: int, where: str | None = None) -> list[dict]:
+        try:
+            search = self.table.search(query_text, query_type="fts")
+            return self._apply_where(search, where).limit(k).to_list()
         except Exception:
             # FTS index may not exist yet.
             return []
@@ -165,10 +230,17 @@ class VectorStore:
         k: int = 10,
         candidates: int = 50,
         rrf_k: int = 60,
+        where: str | None = None,
     ) -> list[dict]:
-        """Reciprocal Rank Fusion of vector and full-text results."""
-        vec_hits = self._vector_search(query_vec, candidates)
-        fts_hits = self._fts_search(query_text, candidates)
+        """Reciprocal Rank Fusion of vector and full-text results.
+
+        ``where`` is an optional LanceDB filter expression applied *before*
+        retrieval (prefilter), so structured constraints — date range, modality,
+        source, collection, sender — narrow the candidate pool instead of being
+        applied to an already-truncated top-k.
+        """
+        vec_hits = self._vector_search(query_vec, candidates, where)
+        fts_hits = self._fts_search(query_text, candidates, where)
 
         scores: dict[str, float] = {}
         records: dict[str, dict] = {}
