@@ -138,8 +138,14 @@ class VLMCaptioner:
         """Return verbatim on-image text, or "" if none is detected."""
         return self.ocr_data_url(self._data_url(image_path))
 
+    def caption_frame_data_urls(self, data_urls: list[str]) -> str:
+        """Summarize a video from already-decoded frame data URLs."""
+        if not data_urls:
+            return ""
+        return self._caption(list(data_urls), _VIDEO_PROMPT)
+
     def caption_frames(self, frames: list[Image.Image]) -> str:
         if not frames:
             return ""
         urls = [_image_to_data_url(f) for f in frames]
-        return self._caption(urls, _VIDEO_PROMPT)
+        return self.caption_frame_data_urls(urls)

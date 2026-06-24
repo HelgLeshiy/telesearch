@@ -141,6 +141,108 @@ def test_path_to_data_url_downscales_large_image(tmp_path):
     assert max(decoded.size) <= 1024
 
 
+def _media_msg(media_type, media_path):
+    return Message(
+        id=1, chat="c", sender="s", timestamp=0, date_str="",
+        media_type=media_type, media_path=media_path,
+    )
+
+
+def test_no_videos_skips_video_processing(tmp_path):
+    """--no-videos must not extract/caption videos even when images are on."""
+    from telesearch.index.build import _message_to_chunks
+
+    (tmp_path / "v.mp4").write_bytes(b"\x00\x00")
+    calls = []
+
+    class FakeCaptioner:
+        def caption_frames(self, frames):
+            calls.append("caption_frames")
+            return "x"
+
+        def caption_frame_data_urls(self, urls):
+            calls.append("caption_frame_data_urls")
+            return "x"
+
+    class FakeTranscriber:
+        def transcribe(self, path):
+            calls.append("transcribe")
+            return "x"
+
+    chunks = _message_to_chunks(
+        _media_msg("video", "v.mp4"),
+        tmp_path,
+        captioner=FakeCaptioner(),
+        transcriber=FakeTranscriber(),
+        decoder=None,
+        num_frames=4,
+        do_images=True,
+        do_videos=False,
+        do_audio=False,
+    )
+    assert calls == []
+    assert chunks == []
+
+
+def test_no_audio_skips_voice(tmp_path):
+    from telesearch.index.build import _message_to_chunks
+
+    (tmp_path / "a.ogg").write_bytes(b"\x00")
+    calls = []
+
+    class FakeTranscriber:
+        def transcribe(self, path):
+            calls.append("transcribe")
+            return "x"
+
+    chunks = _message_to_chunks(
+        _media_msg("voice", "a.ogg"),
+        tmp_path,
+        captioner=None,
+        transcriber=FakeTranscriber(),
+        decoder=None,
+        num_frames=4,
+        do_images=False,
+        do_videos=False,
+        do_audio=False,
+    )
+    assert calls == []
+    assert chunks == []
+
+
+def test_videos_enabled_uses_killable_frame_decode(tmp_path):
+    """With videos on, frames are extracted via the (killable) decoder pool."""
+    from telesearch.index.build import _message_to_chunks
+
+    (tmp_path / "v.mp4").write_bytes(b"\x00\x00")
+    calls = []
+
+    class FakeDecoder:
+        def video_frame_data_urls(self, path, num_frames):
+            calls.append(("frames", num_frames))
+            return ["u1", "u2"]
+
+    class FakeCaptioner:
+        def caption_frame_data_urls(self, urls):
+            calls.append(("caption", tuple(urls)))
+            return "a short summary"
+
+    chunks = _message_to_chunks(
+        _media_msg("video", "v.mp4"),
+        tmp_path,
+        captioner=FakeCaptioner(),
+        transcriber=None,
+        decoder=FakeDecoder(),
+        num_frames=3,
+        do_images=False,
+        do_videos=True,
+        do_audio=False,
+    )
+    assert ("frames", 3) in calls
+    assert any(c[0] == "caption" for c in calls)
+    assert len(chunks) == 1 and chunks[0].modality == "video"
+
+
 def test_decode_pool_decodes_image(tmp_path):
     from telesearch.media.decode_pool import DecodePool
 

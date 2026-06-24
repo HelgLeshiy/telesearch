@@ -15,8 +15,23 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from .captioner import _path_to_data_url
+from .captioner import _image_to_data_url, _path_to_data_url
 from .documents import extract_document_text
+
+
+def _video_frame_data_urls(
+    video_path: str, num_frames: int, max_side: int
+) -> list[str]:
+    """Extract video frames and JPEG-encode them as data URLs (subprocess-safe).
+
+    Frame extraction (PyAV) can hang on a malformed video, so this runs in the
+    killable pool. Returning encoded data URLs (not PIL images) keeps the
+    payload small and picklable.
+    """
+    from .video import extract_frames
+
+    frames = extract_frames(video_path, num_frames)
+    return [_image_to_data_url(f, max_side=max_side) for f in frames]
 
 
 class DecodeTimeout(Exception):
@@ -84,6 +99,10 @@ class DecodePool:
         return self._run(
             extract_document_text, (str(path), mime_type, file_name, max_chars)
         )
+
+    def video_frame_data_urls(self, path: str | Path, num_frames: int) -> list[str]:
+        """Extract + encode video frames as data URLs (killable)."""
+        return self._run(_video_frame_data_urls, (str(path), num_frames, 1024))
 
     def close(self) -> None:
         if self._pool is not None:
