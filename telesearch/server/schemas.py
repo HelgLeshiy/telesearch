@@ -99,6 +99,22 @@ class ShareCreate(BaseModel):
     role: str = "viewer"
 
 
+class PresignRequest(BaseModel):
+    filename: str
+    kind: str = ""
+    name: str = ""
+
+
+class PresignResponse(BaseModel):
+    source_id: str
+    upload: dict
+    complete_url: str
+
+
+class CompleteRequest(BaseModel):
+    index_media: bool = False
+
+
 class PresetCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     params: dict = Field(default_factory=dict)
@@ -109,3 +125,12 @@ class PresetOut(BaseModel):
     name: str
     params: dict
     created_at: datetime
+
+
+class AuditOut(BaseModel):
+    id: str
+    action: str
+    user_id: Optional[str]
+    workspace_id: Optional[str]
+    resource: str
+    ts: datetime

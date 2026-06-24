@@ -37,6 +37,8 @@ def enqueue(
     job_type: str,
     source_id: str | None = None,
     params: dict | None = None,
+    lane: str = "cpu",
+    priority: int = 0,
 ) -> Job:
     job = Job(
         workspace_id=workspace_id,
@@ -44,11 +46,27 @@ def enqueue(
         type=job_type,
         state="pending",
         params=params or {},
+        lane=lane,
+        priority=priority,
     )
     db.add(job)
     db.commit()
     db.refresh(job)
     return job
+
+
+def pending_job_count(db: Session, workspace_id: str) -> int:
+    from sqlalchemy import func
+
+    return int(
+        db.scalar(
+            select(func.count(Job.id)).where(
+                Job.workspace_id == workspace_id,
+                Job.state.in_(("pending", "running")),
+            )
+        )
+        or 0
+    )
 
 
 @register_handler("ingest")
@@ -87,6 +105,45 @@ def _handle_ingest(db: Session, job: Job, server_settings: ServerSettings) -> No
     source.status = "ready"
     job.message = (
         f"parser={result.parser} messages={result.messages} chunks={result.chunks}"
+    )
+    job.progress = 1.0
+    db.commit()
+
+
+@register_handler("graph_refresh")
+def _handle_graph_refresh(db: Session, job: Job, server_settings: ServerSettings) -> None:
+    """Recompute the workspace's knowledge graph from its indexed embeddings."""
+    from ..graph import GraphParams, build_graph
+    from ..index.store import VectorStore
+    from .models import GraphSnapshot
+
+    settings = get_settings()
+    collections = job.params.get("collections")
+    store = VectorStore(settings.workspace_db_path(job.workspace_id), create=False)
+
+    job.message = "loading embeddings"
+    job.progress = 0.2
+    db.commit()
+
+    rows = store.fetch_all(collections)
+    job.message = f"clustering {len(rows)} chunks"
+    job.progress = 0.5
+    db.commit()
+
+    graph = build_graph(rows, params=GraphParams(), collections=collections)
+
+    db.query(GraphSnapshot).filter(
+        GraphSnapshot.workspace_id == job.workspace_id
+    ).delete()
+    db.add(
+        GraphSnapshot(
+            workspace_id=job.workspace_id,
+            params_hash=graph["meta"]["params_hash"],
+            data=graph,
+        )
+    )
+    job.message = (
+        f"topics={graph['meta']['n_topics']} chunks={graph['meta']['n_chunks']}"
     )
     job.progress = 1.0
     db.commit()
@@ -142,11 +199,16 @@ class Worker:
         self._thread: threading.Thread | None = None
 
     def _claim_pending(self) -> str | None:
+        lanes = self.server_settings.worker_lane_set
         db = self.session_factory()
         try:
-            job = db.scalars(
-                select(Job).where(Job.state == "pending").order_by(Job.created_at)
-            ).first()
+            stmt = select(Job).where(Job.state == "pending")
+            if lanes:
+                stmt = stmt.where(Job.lane.in_(lanes))
+            # Highest priority first, then oldest. Higher-priority/cheaper work
+            # is served ahead of a big media job so nobody is starved.
+            stmt = stmt.order_by(Job.priority.desc(), Job.created_at)
+            job = db.scalars(stmt).first()
             return job.id if job else None
         finally:
             db.close()

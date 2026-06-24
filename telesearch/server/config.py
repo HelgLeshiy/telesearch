@@ -51,6 +51,40 @@ class ServerSettings(BaseSettings):
     # off by default because it needs a GPU; the cheap text path runs anywhere.
     index_media_by_default: bool = False
 
+    # Upload quotas / limits (design §5.4, §8). 0 disables a limit.
+    max_upload_bytes: int = 512 * 1024 * 1024  # 512 MB per upload
+    max_sources_per_workspace: int = 100
+    max_pending_jobs_per_workspace: int = 50
+
+    # Background worker: which job lanes this process serves. Separate the cheap
+    # CPU work (text indexing, graph) from heavy GPU work (VLM/Whisper) so a big
+    # media job can't starve everyone (design §8). Comma-separated: "cpu,gpu".
+    worker_lanes: str = "cpu,gpu"
+
+    # At-rest encryption of uploaded blobs. Set a key to enable; generate with
+    # `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+    blob_encryption_key: str = ""
+
+    # S3 backend extras (used only when blob_backend=s3).
+    s3_region: str = ""
+    s3_presign_expiry: int = 3600
+
+    # OIDC single sign-on (optional). When enabled, /api/auth/oidc/* is active.
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = ""
+    oidc_scopes: str = "openid email profile"
+
+    # Experimental G3 fact graph (GraphRAG). Requires an LLM endpoint; off by
+    # default and clearly experimental (design §7.5 / Phase 4).
+    graph_g3_enabled: bool = False
+
+    @property
+    def worker_lane_set(self) -> set[str]:
+        return {x.strip() for x in self.worker_lanes.split(",") if x.strip()}
+
     @property
     def resolved_database_url(self) -> str:
         if self.database_url:

@@ -176,6 +176,34 @@ class VectorStore:
         except TypeError:  # pragma: no cover - older LanceDB without prefilter kw
             return search.where(where)
 
+    def fetch_all(
+        self,
+        collections: list[str] | None = None,
+        *,
+        limit: int = 200_000,
+        with_vectors: bool = True,
+    ) -> list[dict]:
+        """Return all chunks (optionally restricted to ``collections``).
+
+        Used by the knowledge-graph builder, which needs the stored embeddings
+        and content for every chunk. Returns an empty list if no table exists.
+        """
+        if self.table is None:
+            return []
+        tbl = self.table.to_arrow()
+        if collections is not None and "collection_id" in tbl.schema.names:
+            import pyarrow.compute as pc
+
+            mask = pc.is_in(tbl.column("collection_id"), value_set=pa.array(collections))
+            tbl = tbl.filter(mask)
+        if tbl.num_rows > limit:
+            tbl = tbl.slice(0, limit)
+        rows = tbl.to_pylist()
+        if not with_vectors:
+            for r in rows:
+                r.pop("vector", None)
+        return rows
+
     def delete_collection(self, collection_id: str) -> int:
         """Delete every chunk of a collection; return rows removed (0 if no table)."""
         if self.table is None:
